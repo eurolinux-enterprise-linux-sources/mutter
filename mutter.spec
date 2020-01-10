@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       3.28.3
-Release:       10%{?dist}
+Release:       11%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -77,6 +77,9 @@ Patch262: 0002-monitor-manager-xrandr-Create-dummy-screen-sized-mon.patch
 # Queue stage redraw on reactivate (#1636460)
 Patch270: 0001-idle-monitor-Use-G_SOURCE_CONTINUE-instead-of-TRUE.patch
 Patch271: 0002-idle-monitor-Postpone-dispatching-of-idle-timeout-if.patch
+
+# Don't loose pointer button grabs (#1756263)
+Patch272: 0001-events-Sync-pending-pointer-events-without-a-window.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -233,6 +236,10 @@ glib-compile-schemas %{_datadir}/glib-2.0/schemas &> /dev/null || :
 %{_libdir}/pkgconfig/*
 
 %changelog
+* Wed Oct 02 2019 Jonas Ådahl <jadahl@redhat.com>) - 3.28.3-11
+- Don't loose pointer button grabs
+  Resolves: #1756263
+
 * Wed Apr 17 2019 Jonas Ådahl <jadahl@redhat.com> - 3.28.3-10
 - Fix idle monitor race condition
   Resolves: #1636460

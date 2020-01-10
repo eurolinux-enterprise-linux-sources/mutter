@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       3.28.3
-Release:       11%{?dist}
+Release:       12%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -80,6 +80,10 @@ Patch271: 0002-idle-monitor-Postpone-dispatching-of-idle-timeout-if.patch
 
 # Don't loose pointer button grabs (#1756263)
 Patch272: 0001-events-Sync-pending-pointer-events-without-a-window.patch
+
+# Fix crash in meta_monitor_mode_get_resolution() (#1760738)
+Patch273: 0001-monitor-Use-current-monitor-mode-to-check-whether-ac.patch
+Patch274: 0002-window-Return-1-if-meta_window_get_monitor-is-called.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -236,6 +240,10 @@ glib-compile-schemas %{_datadir}/glib-2.0/schemas &> /dev/null || :
 %{_libdir}/pkgconfig/*
 
 %changelog
+* Fri Oct 11 2019 Jonas Ådahl <jadahl@redhat.com> - 3.28.3-12
+- Fix crash in meta_monitor_mode_get_resolution()
+  Resolves #1760738
+
 * Wed Oct 02 2019 Jonas Ådahl <jadahl@redhat.com>) - 3.28.3-11
 - Don't loose pointer button grabs
   Resolves: #1756263

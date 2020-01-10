@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       3.28.3
-Release:       7%{?dist}
+Release:       8%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -66,6 +66,10 @@ Patch202: 0001-renderer-native-Check-calculated-transform-when-crea.patch
 
 # Don't ignore 'MetaModes' (#1690760)
 Patch250: inherit-xrandr-metamodes.patch
+
+# Handle lack of XRANDR (#1714959)
+Patch260: 0001-gpu-xrandr-Move-dpms-state-and-screen-size-updating-.patch
+Patch261: 0002-monitor-manager-xrandr-Create-dummy-screen-sized-mon.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -222,6 +226,9 @@ glib-compile-schemas %{_datadir}/glib-2.0/schemas &> /dev/null || :
 %{_libdir}/pkgconfig/*
 
 %changelog
+* Wed Jun 12 2019 Jonas Ådahl <jadahl@redhat.com> - 3.28.3-8
+- Handle lack of XRANDR (#1714959)
+
 * Mon Mar 18 2019 Jonas Ådahl <jadahl@redhat.com> - 3.28.3-7
 - Don't ignore current mode when deriving current config (#1690760)
 

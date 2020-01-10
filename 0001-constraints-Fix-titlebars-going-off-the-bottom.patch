@@ -1,0 +1,39 @@
+From 2fd734c349ab00f2f460af97f7c383678407f620 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Wed, 16 Jan 2019 01:09:26 +0100
+Subject: [PATCH] constraints: Fix titlebars going off the bottom
+
+The "current" rect includes the frame, so in order to keep the
+titlebar on screen, window movement must be restricted to at
+most (height - titlebar_height) past the work area bottom.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/391
+---
+ src/core/constraints.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/constraints.c b/src/core/constraints.c
+index 3b6203d6b..92b146ce3 100644
+--- a/src/core/constraints.c
++++ b/src/core/constraints.c
+@@ -1570,7 +1570,7 @@ constrain_titlebar_visible (MetaWindow         *window,
+       MetaFrameBorders borders;
+       meta_frame_calc_borders (window->frame, &borders);
+ 
+-      bottom_amount = info->current.height + borders.visible.bottom;
++      bottom_amount = info->current.height - borders.visible.top;
+       vert_amount_onscreen = borders.visible.top;
+     }
+   else
+@@ -1649,7 +1649,7 @@ constrain_partially_onscreen (MetaWindow         *window,
+       MetaFrameBorders borders;
+       meta_frame_calc_borders (window->frame, &borders);
+ 
+-      bottom_amount = info->current.height + borders.visible.bottom;
++      bottom_amount = info->current.height - borders.visible.top;
+       vert_amount_onscreen = borders.visible.top;
+     }
+   else
+-- 
+2.20.1
+

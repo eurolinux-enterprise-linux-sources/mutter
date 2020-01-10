@@ -1,0 +1,27 @@
+From ee5b766580c702858bb10bab764a39f95a5b6432 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Wed, 13 Jun 2018 13:48:24 +0200
+Subject: [PATCH] clutter: Only reset scroll axes on slave devices
+
+As a plus, unknown source device IDs will just warn instead of crash.
+---
+ clutter/clutter/x11/clutter-device-manager-xi2.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/clutter/clutter/x11/clutter-device-manager-xi2.c b/clutter/clutter/x11/clutter-device-manager-xi2.c
+index 62f558380..ec7268ca8 100644
+--- a/clutter/clutter/x11/clutter-device-manager-xi2.c
++++ b/clutter/clutter/x11/clutter-device-manager-xi2.c
+@@ -1803,7 +1803,8 @@ clutter_device_manager_xi2_translate_event (ClutterEventTranslator *translator,
+             _clutter_input_device_set_stage (device, NULL);
+           }
+ 
+-        _clutter_input_device_reset_scroll_info (source_device);
++        if (clutter_input_device_get_device_mode (source_device) == CLUTTER_INPUT_MODE_SLAVE)
++          _clutter_input_device_reset_scroll_info (source_device);
+ 
+         clutter_event_set_device (event, device);
+         clutter_event_set_source_device (event, source_device);
+-- 
+2.14.3
+

@@ -1,0 +1,28 @@
+From 0ac0bc55cf69579834b28d99729cefd1157624c3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 16 Apr 2019 18:06:54 +0200
+Subject: [PATCH 1/2] idle-monitor: Use G_SOURCE_CONTINUE instead of TRUE
+
+Returning TRUE is confusing, as it doesn't carry any relevant meaning.
+Use G_SOURCE_CONTINUE to make it clearer that the source is here to
+stay.
+---
+ src/backends/meta-idle-monitor.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/backends/meta-idle-monitor.c b/src/backends/meta-idle-monitor.c
+index 46cf8cd76..2b634f59a 100644
+--- a/src/backends/meta-idle-monitor.c
++++ b/src/backends/meta-idle-monitor.c
+@@ -315,7 +315,7 @@ idle_monitor_dispatch_timeout (GSource     *source,
+   _meta_idle_monitor_watch_fire (watch);
+   g_source_set_ready_time (watch->timeout_source, -1);
+ 
+-  return TRUE;
++  return G_SOURCE_CONTINUE;
+ }
+ 
+ static GSourceFuncs idle_monitor_source_funcs = {
+-- 
+2.20.1
+

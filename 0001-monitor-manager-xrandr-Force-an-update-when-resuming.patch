@@ -1,0 +1,776 @@
+From 100795c2729305f919ff9611c877ea3e74d528b7 Mon Sep 17 00:00:00 2001
+From: Rui Matos <tiagomatos@gmail.com>
+Date: Mon, 4 Jun 2018 16:35:04 -0400
+Subject: [PATCH] monitor-manager-xrandr: Force an update when resuming from
+ suspend
+
+The stack below us isn't as reliable as we'd like and in some cases
+doesn't generate RRScreenChangeNotify events when e.g. resuming a
+laptop on a dock, meaning that we'd miss newly attached outputs.
+---
+ src/backends/meta-gpu.c                       |  7 ++
+ src/backends/meta-gpu.h                       |  2 +
+ src/backends/x11/meta-gpu-xrandr.c            | 26 ++++-
+ .../x11/meta-monitor-manager-xrandr.c         | 96 +++++++++++++++++--
+ 4 files changed, 121 insertions(+), 10 deletions(-)
+
+diff --git a/src/backends/meta-gpu.c b/src/backends/meta-gpu.c
+index 3577391e5..946f72387 100644
+--- a/src/backends/meta-gpu.c
++++ b/src/backends/meta-gpu.c
+@@ -37,60 +37,67 @@ enum
+ static GParamSpec *obj_props[PROP_LAST];
+ 
+ typedef struct _MetaGpuPrivate
+ {
+   MetaMonitorManager *monitor_manager;
+ 
+   GList *outputs;
+   GList *crtcs;
+   GList *modes;
+ } MetaGpuPrivate;
+ 
+ G_DEFINE_TYPE_WITH_PRIVATE (MetaGpu, meta_gpu, G_TYPE_OBJECT)
+ 
+ gboolean
+ meta_gpu_has_hotplug_mode_update (MetaGpu *gpu)
+ {
+   MetaGpuPrivate *priv = meta_gpu_get_instance_private (gpu);
+   GList *l;
+ 
+   for (l = priv->outputs; l; l = l->next)
+     {
+       MetaOutput *output = l->data;
+ 
+       if (output->hotplug_mode_update)
+         return TRUE;
+     }
+ 
+   return FALSE;
+ }
+ 
++void
++meta_gpu_poll_hardware (MetaGpu *gpu)
++{
++  if (META_GPU_GET_CLASS (gpu)->poll_hardware)
++    META_GPU_GET_CLASS (gpu)->poll_hardware (gpu);
++}
++
+ gboolean
+ meta_gpu_read_current (MetaGpu  *gpu,
+                        GError  **error)
+ {
+   MetaGpuPrivate *priv = meta_gpu_get_instance_private (gpu);
+   gboolean ret;
+   GList *old_outputs;
+   GList *old_crtcs;
+   GList *old_modes;
+ 
+   /* TODO: Get rid of this when objects incref:s what they need instead */
+   old_outputs = priv->outputs;
+   old_crtcs = priv->crtcs;
+   old_modes = priv->modes;
+ 
+   ret = META_GPU_GET_CLASS (gpu)->read_current (gpu, error);
+ 
+   g_list_free_full (old_outputs, g_object_unref);
+   g_list_free_full (old_modes, g_object_unref);
+   g_list_free_full (old_crtcs, g_object_unref);
+ 
+   return ret;
+ }
+ 
+ MetaMonitorManager *
+ meta_gpu_get_monitor_manager (MetaGpu *gpu)
+ {
+   MetaGpuPrivate *priv = meta_gpu_get_instance_private (gpu);
+ 
+   return priv->monitor_manager;
+diff --git a/src/backends/meta-gpu.h b/src/backends/meta-gpu.h
+index 4badcbd26..3cec8e5b0 100644
+--- a/src/backends/meta-gpu.h
++++ b/src/backends/meta-gpu.h
+@@ -8,59 +8,61 @@
+  * published by the Free Software Foundation; either version 2 of the
+  * License, or (at your option) any later version.
+  *
+  * This program is distributed in the hope that it will be useful, but
+  * WITHOUT ANY WARRANTY; without even the implied warranty of
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+  * General Public License for more details.
+  *
+  * You should have received a copy of the GNU General Public License
+  * along with this program; if not, write to the Free Software
+  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
+  * 02111-1307, USA.
+  */
+ 
+ #ifndef META_GPU_H
+ #define META_GPU_H
+ 
+ #include <glib-object.h>
+ 
+ #include "backends/meta-monitor-manager-private.h"
+ 
+ #define META_TYPE_GPU (meta_gpu_get_type ())
+ G_DECLARE_DERIVABLE_TYPE (MetaGpu, meta_gpu, META, GPU, GObject)
+ 
+ struct _MetaGpuClass
+ {
+   GObjectClass parent_class;
+ 
+   gboolean (* read_current) (MetaGpu  *gpu,
+                              GError  **error);
++  void     (* poll_hardware) (MetaGpu *gpu);
+ };
+ 
+ int meta_gpu_get_kms_fd (MetaGpu *gpu);
+ 
+ const char * meta_gpu_get_kms_file_path (MetaGpu *gpu);
+ 
++void meta_gpu_poll_hardware (MetaGpu *gpu);
+ gboolean meta_gpu_read_current (MetaGpu  *gpu,
+                                 GError  **error);
+ 
+ gboolean meta_gpu_has_hotplug_mode_update (MetaGpu *gpu);
+ 
+ MetaMonitorManager * meta_gpu_get_monitor_manager (MetaGpu *gpu);
+ 
+ GList * meta_gpu_get_outputs (MetaGpu *gpu);
+ 
+ GList * meta_gpu_get_crtcs (MetaGpu *gpu);
+ 
+ GList * meta_gpu_get_modes (MetaGpu *gpu);
+ 
+ void meta_gpu_take_outputs (MetaGpu *gpu,
+                             GList   *outputs);
+ 
+ void meta_gpu_take_crtcs (MetaGpu *gpu,
+                           GList   *crtcs);
+ 
+ void meta_gpu_take_modes (MetaGpu *gpu,
+                           GList   *modes);
+ 
+ #endif /* META_GPU_H */
+diff --git a/src/backends/x11/meta-gpu-xrandr.c b/src/backends/x11/meta-gpu-xrandr.c
+index 14b46d530..add80c0d2 100644
+--- a/src/backends/x11/meta-gpu-xrandr.c
++++ b/src/backends/x11/meta-gpu-xrandr.c
+@@ -17,97 +17,107 @@
+  * This program is distributed in the hope that it will be useful, but
+  * WITHOUT ANY WARRANTY; without even the implied warranty of
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+  * General Public License for more details.
+  *
+  * You should have received a copy of the GNU General Public License
+  * along with this program; if not, see <http://www.gnu.org/licenses/>.
+  */
+ 
+ #include "config.h"
+ 
+ #include "backends/x11/meta-gpu-xrandr.h"
+ 
+ #include <string.h>
+ #include <X11/extensions/dpms.h>
+ #include <X11/Xlibint.h>
+ 
+ #include "backends/meta-output.h"
+ #include "backends/x11/meta-crtc-xrandr.h"
+ #include "backends/x11/meta-monitor-manager-xrandr.h"
+ #include "backends/x11/meta-output-xrandr.h"
+ 
+ struct _MetaGpuXrandr
+ {
+   MetaGpu parent;
+ 
+   XRRScreenResources *resources;
+ 
+   int max_screen_width;
+   int max_screen_height;
++
++  gboolean need_hardware_poll;
+ };
+ 
+ G_DEFINE_TYPE (MetaGpuXrandr, meta_gpu_xrandr, META_TYPE_GPU)
+ 
+ XRRScreenResources *
+ meta_gpu_xrandr_get_resources (MetaGpuXrandr *gpu_xrandr)
+ {
+   return gpu_xrandr->resources;
+ }
+ 
+ void
+ meta_gpu_xrandr_get_max_screen_size (MetaGpuXrandr *gpu_xrandr,
+                                      int           *max_width,
+                                      int           *max_height)
+ {
+   *max_width = gpu_xrandr->max_screen_width;
+   *max_height = gpu_xrandr->max_screen_height;
+ }
+ 
+ static int
+ compare_outputs (const void *one,
+                  const void *two)
+ {
+   const MetaOutput *o_one = one, *o_two = two;
+ 
+   return strcmp (o_one->name, o_two->name);
+ }
+ 
+ static char *
+ get_xmode_name (XRRModeInfo *xmode)
+ {
+   int width = xmode->width;
+   int height = xmode->height;
+ 
+   return g_strdup_printf ("%dx%d", width, height);
+ }
+ 
++static void
++meta_gpu_xrandr_poll_hardware (MetaGpu *gpu)
++{
++  MetaGpuXrandr *gpu_xrandr = META_GPU_XRANDR (gpu);
++
++  gpu_xrandr->need_hardware_poll = TRUE;
++}
++
+ static gboolean
+ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+                               GError  **error)
+ {
+   MetaGpuXrandr *gpu_xrandr = META_GPU_XRANDR (gpu);
+   MetaMonitorManager *monitor_manager = meta_gpu_get_monitor_manager (gpu);
+   MetaMonitorManagerXrandr *monitor_manager_xrandr =
+     META_MONITOR_MANAGER_XRANDR (monitor_manager);
+   Display *xdisplay =
+     meta_monitor_manager_xrandr_get_xdisplay (monitor_manager_xrandr);
+   XRRScreenResources *resources;
+   RROutput primary_output;
+   unsigned int i, j;
+   GList *l;
+   int min_width, min_height;
+   Screen *screen;
+   BOOL dpms_capable, dpms_enabled;
+   CARD16 dpms_state;
+   GList *outputs = NULL;
+   GList *modes = NULL;
+   GList *crtcs = NULL;
+ 
+   if (gpu_xrandr->resources)
+     XRRFreeScreenResources (gpu_xrandr->resources);
+   gpu_xrandr->resources = NULL;
+ 
+   dpms_capable = DPMSCapable (xdisplay);
+ 
+   if (dpms_capable &&
+       DPMSInfo (xdisplay, &dpms_state, &dpms_enabled) &&
+@@ -121,62 +131,72 @@ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+         case DPMSModeStandby:
+           monitor_manager->power_save_mode = META_POWER_SAVE_STANDBY;
+           break;
+         case DPMSModeSuspend:
+           monitor_manager->power_save_mode = META_POWER_SAVE_SUSPEND;
+           break;
+         case DPMSModeOff:
+           monitor_manager->power_save_mode = META_POWER_SAVE_OFF;
+           break;
+         default:
+           monitor_manager->power_save_mode = META_POWER_SAVE_UNSUPPORTED;
+           break;
+         }
+     }
+   else
+     {
+       monitor_manager->power_save_mode = META_POWER_SAVE_UNSUPPORTED;
+     }
+ 
+   XRRGetScreenSizeRange (xdisplay, DefaultRootWindow (xdisplay),
+                          &min_width,
+                          &min_height,
+                          &gpu_xrandr->max_screen_width,
+                          &gpu_xrandr->max_screen_height);
+ 
+   screen = ScreenOfDisplay (xdisplay, DefaultScreen (xdisplay));
+   /* This is updated because we called XRRUpdateConfiguration. */
+   monitor_manager->screen_width = WidthOfScreen (screen);
+   monitor_manager->screen_height = HeightOfScreen (screen);
+ 
+-  resources = XRRGetScreenResourcesCurrent (xdisplay,
+-                                            DefaultRootWindow (xdisplay));
++  if (gpu_xrandr->need_hardware_poll)
++    {
++      resources = XRRGetScreenResources (xdisplay,
++                                         DefaultRootWindow (xdisplay));
++      gpu_xrandr->need_hardware_poll = FALSE;
++    }
++  else
++    {
++      resources = XRRGetScreenResourcesCurrent (xdisplay,
++                                                DefaultRootWindow (xdisplay));
++    }
++
+   if (!resources)
+     {
+       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                    "Failed to retrieve Xrandr screen resources");
+       return FALSE;
+     }
+ 
+   gpu_xrandr->resources = resources;
+ 
+   outputs = NULL;
+   modes = NULL;
+   crtcs = NULL;
+ 
+   for (i = 0; i < (unsigned)resources->nmode; i++)
+     {
+       XRRModeInfo *xmode = &resources->modes[i];
+       MetaCrtcMode *mode;
+ 
+       mode = g_object_new (META_TYPE_CRTC_MODE, NULL);
+ 
+       mode->mode_id = xmode->id;
+       mode->width = xmode->width;
+       mode->height = xmode->height;
+       mode->refresh_rate = (xmode->dotClock /
+                             ((float)xmode->hTotal * xmode->vTotal));
+       mode->flags = xmode->modeFlags;
+       mode->name = get_xmode_name (xmode);
+ 
+       modes = g_list_append (modes, mode);
+     }
+@@ -255,42 +275,44 @@ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+                 }
+             }
+         }
+     }
+ 
+   return TRUE;
+ }
+ 
+ MetaGpuXrandr *
+ meta_gpu_xrandr_new (MetaMonitorManagerXrandr *monitor_manager_xrandr)
+ {
+   return g_object_new (META_TYPE_GPU_XRANDR,
+                        "monitor-manager", monitor_manager_xrandr,
+                        NULL);
+ }
+ 
+ static void
+ meta_gpu_xrandr_finalize (GObject *object)
+ {
+   MetaGpuXrandr *gpu_xrandr = META_GPU_XRANDR (object);
+ 
+   g_clear_pointer (&gpu_xrandr->resources,
+                    XRRFreeScreenResources);
+ 
+   G_OBJECT_CLASS (meta_gpu_xrandr_parent_class)->finalize (object);
+ }
+ 
+ static void
+ meta_gpu_xrandr_init (MetaGpuXrandr *gpu_xrandr)
+ {
++  gpu_xrandr->need_hardware_poll = TRUE;
+ }
+ 
+ static void
+ meta_gpu_xrandr_class_init (MetaGpuXrandrClass *klass)
+ {
+   GObjectClass *object_class = G_OBJECT_CLASS (klass);
+   MetaGpuClass *gpu_class = META_GPU_CLASS (klass);
+ 
+   object_class->finalize = meta_gpu_xrandr_finalize;
+ 
+   gpu_class->read_current = meta_gpu_xrandr_read_current;
++  gpu_class->poll_hardware = meta_gpu_xrandr_poll_hardware;
+ }
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.c b/src/backends/x11/meta-monitor-manager-xrandr.c
+index 90a3952db..2d9a32339 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.c
++++ b/src/backends/x11/meta-monitor-manager-xrandr.c
+@@ -33,95 +33,101 @@
+ #include <clutter/clutter.h>
+ 
+ #include <X11/Xlibint.h>
+ #include <X11/extensions/dpms.h>
+ #include <X11/Xlib-xcb.h>
+ #include <xcb/randr.h>
+ 
+ #include "meta-backend-x11.h"
+ #include <meta/main.h>
+ #include <meta/errors.h>
+ #include "backends/meta-crtc.h"
+ #include "backends/meta-monitor-config-manager.h"
+ #include "backends/meta-logical-monitor.h"
+ #include "backends/meta-output.h"
+ #include "backends/x11/meta-crtc-xrandr.h"
+ #include "backends/x11/meta-gpu-xrandr.h"
+ #include "backends/x11/meta-output-xrandr.h"
+ 
+ /* Look for DPI_FALLBACK in:
+  * http://git.gnome.org/browse/gnome-settings-daemon/tree/plugins/xsettings/gsd-xsettings-manager.c
+  * for the reasoning */
+ #define DPI_FALLBACK 96.0
+ 
+ struct _MetaMonitorManagerXrandr
+ {
+   MetaMonitorManager parent_instance;
+ 
+   Display *xdisplay;
+   int rr_event_base;
+   int rr_error_base;
++
++  guint logind_watch_id;
++  guint logind_signal_sub_id;
++
+   gboolean has_randr15;
+ 
+   /*
+    * The X server deals with multiple GPUs for us, soe just see what the X
+    * server gives us as one single GPU, even though it may actually be backed
+    * by multiple.
+    */
+   MetaGpu *gpu;
+ 
+   xcb_timestamp_t last_xrandr_set_timestamp;
+ 
+ #ifdef HAVE_XRANDR15
+   GHashTable *tiled_monitor_atoms;
+ #endif /* HAVE_XRANDR15 */
+ 
+   float *supported_scales;
+   int n_supported_scales;
+ };
+ 
+ struct _MetaMonitorManagerXrandrClass
+ {
+   MetaMonitorManagerClass parent_class;
+ };
+ 
+ G_DEFINE_TYPE (MetaMonitorManagerXrandr, meta_monitor_manager_xrandr, META_TYPE_MONITOR_MANAGER);
+ 
+ #ifdef HAVE_XRANDR15
+ typedef struct _MetaMonitorXrandrData
+ {
+   Atom xrandr_name;
+ } MetaMonitorXrandrData;
+ 
+ GQuark quark_meta_monitor_xrandr_data;
+ #endif /* HAVE_RANDR15 */
+ 
++static void meta_monitor_manager_xrandr_update (MetaMonitorManagerXrandr *manager_xrandr);
++
+ Display *
+ meta_monitor_manager_xrandr_get_xdisplay (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+   return manager_xrandr->xdisplay;
+ }
+ 
+ gboolean
+ meta_monitor_manager_xrandr_has_randr15 (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+   return manager_xrandr->has_randr15;
+ }
+ 
+ static GBytes *
+ meta_monitor_manager_xrandr_read_edid (MetaMonitorManager *manager,
+                                        MetaOutput         *output)
+ {
+   return meta_output_xrandr_read_edid (output);
+ }
+ 
+ static void
+ meta_monitor_manager_xrandr_set_power_save_mode (MetaMonitorManager *manager,
+ 						 MetaPowerSave       mode)
+ {
+   MetaMonitorManagerXrandr *manager_xrandr = META_MONITOR_MANAGER_XRANDR (manager);
+   CARD16 state;
+ 
+   switch (mode) {
+   case META_POWER_SAVE_ON:
+     state = DPMSModeOn;
+     break;
+@@ -934,198 +940,272 @@ meta_monitor_manager_xrandr_calculate_supported_scales (MetaMonitorManager
+                    manager_xrandr->n_supported_scales * sizeof (float));
+ }
+ 
+ static MetaMonitorManagerCapability
+ meta_monitor_manager_xrandr_get_capabilities (MetaMonitorManager *manager)
+ {
+   return (META_MONITOR_MANAGER_CAPABILITY_MIRRORING |
+           META_MONITOR_MANAGER_CAPABILITY_GLOBAL_SCALE_REQUIRED);
+ }
+ 
+ static gboolean
+ meta_monitor_manager_xrandr_get_max_screen_size (MetaMonitorManager *manager,
+                                                  int                *max_width,
+                                                  int                *max_height)
+ {
+   MetaMonitorManagerXrandr *manager_xrandr =
+     META_MONITOR_MANAGER_XRANDR (manager);
+ 
+   meta_gpu_xrandr_get_max_screen_size (META_GPU_XRANDR (manager_xrandr->gpu),
+                                        max_width, max_height);
+ 
+   return TRUE;
+ }
+ 
+ static MetaLogicalMonitorLayoutMode
+ meta_monitor_manager_xrandr_get_default_layout_mode (MetaMonitorManager *manager)
+ {
+   return META_LOGICAL_MONITOR_LAYOUT_MODE_PHYSICAL;
+ }
+ 
++static void
++logind_signal_handler (GDBusConnection *connection,
++                       const gchar     *sender_name,
++                       const gchar     *object_path,
++                       const gchar     *interface_name,
++                       const gchar     *signal_name,
++                       GVariant        *parameters,
++                       gpointer         user_data)
++{
++  MetaMonitorManagerXrandr *manager_xrandr = user_data;
++  gboolean suspending;
++
++  if (!g_str_equal (signal_name, "PrepareForSleep"))
++    return;
++
++  g_variant_get (parameters, "(b)", &suspending);
++  if (!suspending)
++    {
++      meta_gpu_poll_hardware (manager_xrandr->gpu);
++      meta_monitor_manager_xrandr_update (manager_xrandr);
++    }
++}
++
++static void
++logind_appeared (GDBusConnection *connection,
++                 const gchar     *name,
++                 const gchar     *name_owner,
++                 gpointer         user_data)
++{
++  MetaMonitorManagerXrandr *manager_xrandr = user_data;
++
++  manager_xrandr->logind_signal_sub_id = g_dbus_connection_signal_subscribe (connection,
++                                                                             "org.freedesktop.login1",
++                                                                             "org.freedesktop.login1.Manager",
++                                                                             "PrepareForSleep",
++                                                                             "/org/freedesktop/login1",
++                                                                             NULL,
++                                                                             G_DBUS_SIGNAL_FLAGS_NONE,
++                                                                             logind_signal_handler,
++                                                                             manager_xrandr,
++                                                                             NULL);
++}
++
++static void
++logind_vanished (GDBusConnection *connection,
++                 const gchar     *name,
++                 gpointer         user_data)
++{
++  MetaMonitorManagerXrandr *manager_xrandr = user_data;
++
++  if (connection && manager_xrandr->logind_signal_sub_id > 0)
++    g_dbus_connection_signal_unsubscribe (connection, manager_xrandr->logind_signal_sub_id);
++
++  manager_xrandr->logind_signal_sub_id = 0;
++}
++
+ static void
+ meta_monitor_manager_xrandr_constructed (GObject *object)
+ {
+   MetaMonitorManagerXrandr *manager_xrandr =
+     META_MONITOR_MANAGER_XRANDR (object);
+   MetaMonitorManager *manager = META_MONITOR_MANAGER (manager_xrandr);
+   MetaBackendX11 *backend =
+     META_BACKEND_X11 (meta_monitor_manager_get_backend (manager));
+ 
+   manager_xrandr->xdisplay = meta_backend_x11_get_xdisplay (backend);
+ 
+   manager_xrandr->gpu = META_GPU (meta_gpu_xrandr_new (manager_xrandr));
+   meta_monitor_manager_add_gpu (manager, manager_xrandr->gpu);
+ 
+   if (!XRRQueryExtension (manager_xrandr->xdisplay,
+ 			  &manager_xrandr->rr_event_base,
+ 			  &manager_xrandr->rr_error_base))
+     {
+       return;
+     }
+   else
+     {
+       int major_version, minor_version;
+       /* We only use ScreenChangeNotify, but GDK uses the others,
+ 	 and we don't want to step on its toes */
+       XRRSelectInput (manager_xrandr->xdisplay,
+ 		      DefaultRootWindow (manager_xrandr->xdisplay),
+ 		      RRScreenChangeNotifyMask
+ 		      | RRCrtcChangeNotifyMask
+ 		      | RROutputPropertyNotifyMask);
+ 
+       manager_xrandr->has_randr15 = FALSE;
+       XRRQueryVersion (manager_xrandr->xdisplay, &major_version,
+                        &minor_version);
+ #ifdef HAVE_XRANDR15
+       if (major_version > 1 ||
+           (major_version == 1 &&
+            minor_version >= 5))
+         {
+           manager_xrandr->has_randr15 = TRUE;
+           manager_xrandr->tiled_monitor_atoms = g_hash_table_new (NULL, NULL);
+         }
+       meta_monitor_manager_xrandr_init_monitors (manager_xrandr);
+ #endif
+     }
+ 
+   G_OBJECT_CLASS (meta_monitor_manager_xrandr_parent_class)->constructed (object);
+ }
+ 
+ static void
+ meta_monitor_manager_xrandr_finalize (GObject *object)
+ {
+   MetaMonitorManagerXrandr *manager_xrandr = META_MONITOR_MANAGER_XRANDR (object);
+ 
+   g_clear_object (&manager_xrandr->gpu);
+   g_hash_table_destroy (manager_xrandr->tiled_monitor_atoms);
+   g_free (manager_xrandr->supported_scales);
+ 
++  if (manager_xrandr->logind_watch_id > 0)
++    g_bus_unwatch_name (manager_xrandr->logind_watch_id);
++  manager_xrandr->logind_watch_id = 0;
++
+   G_OBJECT_CLASS (meta_monitor_manager_xrandr_parent_class)->finalize (object);
+ }
+ 
+ static void
+ meta_monitor_manager_xrandr_init (MetaMonitorManagerXrandr *manager_xrandr)
+ {
++  manager_xrandr->logind_watch_id = g_bus_watch_name (G_BUS_TYPE_SYSTEM,
++                                                      "org.freedesktop.login1",
++                                                      G_BUS_NAME_WATCHER_FLAGS_NONE,
++                                                      logind_appeared,
++                                                      logind_vanished,
++                                                      manager_xrandr,
++                                                      NULL);
+ }
+ 
+ static void
+ meta_monitor_manager_xrandr_class_init (MetaMonitorManagerXrandrClass *klass)
+ {
+   MetaMonitorManagerClass *manager_class = META_MONITOR_MANAGER_CLASS (klass);
+   GObjectClass *object_class = G_OBJECT_CLASS (klass);
+ 
+   object_class->finalize = meta_monitor_manager_xrandr_finalize;
+   object_class->constructed = meta_monitor_manager_xrandr_constructed;
+ 
+   manager_class->read_edid = meta_monitor_manager_xrandr_read_edid;
+   manager_class->ensure_initial_config = meta_monitor_manager_xrandr_ensure_initial_config;
+   manager_class->apply_monitors_config = meta_monitor_manager_xrandr_apply_monitors_config;
+   manager_class->set_power_save_mode = meta_monitor_manager_xrandr_set_power_save_mode;
+   manager_class->change_backlight = meta_monitor_manager_xrandr_change_backlight;
+   manager_class->get_crtc_gamma = meta_monitor_manager_xrandr_get_crtc_gamma;
+   manager_class->set_crtc_gamma = meta_monitor_manager_xrandr_set_crtc_gamma;
+ #ifdef HAVE_XRANDR15
+   manager_class->tiled_monitor_added = meta_monitor_manager_xrandr_tiled_monitor_added;
+   manager_class->tiled_monitor_removed = meta_monitor_manager_xrandr_tiled_monitor_removed;
+ #endif
+   manager_class->is_transform_handled = meta_monitor_manager_xrandr_is_transform_handled;
+   manager_class->calculate_monitor_mode_scale = meta_monitor_manager_xrandr_calculate_monitor_mode_scale;
+   manager_class->calculate_supported_scales = meta_monitor_manager_xrandr_calculate_supported_scales;
+   manager_class->get_capabilities = meta_monitor_manager_xrandr_get_capabilities;
+   manager_class->get_max_screen_size = meta_monitor_manager_xrandr_get_max_screen_size;
+   manager_class->get_default_layout_mode = meta_monitor_manager_xrandr_get_default_layout_mode;
+ 
+   quark_meta_monitor_xrandr_data =
+     g_quark_from_static_string ("-meta-monitor-xrandr-data");
+ }
+ 
+ static gboolean
+ is_xvnc (MetaMonitorManager *manager)
+ {
+   MetaMonitorManagerXrandr *manager_xrandr =
+     META_MONITOR_MANAGER_XRANDR (manager);
+   GList *l;
+ 
+   for (l = meta_gpu_get_outputs (manager_xrandr->gpu); l; l = l->next)
+     {
+       MetaOutput *output = l->data;
+ 
+       if (g_str_has_prefix (output->name, "VNC-"))
+         return TRUE;
+     }
+ 
+   return FALSE;
+ }
+ 
+-gboolean
+-meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xrandr,
+-					   XEvent                   *event)
++static void
++meta_monitor_manager_xrandr_update (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+   MetaMonitorManager *manager = META_MONITOR_MANAGER (manager_xrandr);
+   MetaGpuXrandr *gpu_xrandr;
+   XRRScreenResources *resources;
+   gboolean is_hotplug;
+   gboolean is_our_configuration;
+   unsigned int timestamp;
+ 
+-  if ((event->type - manager_xrandr->rr_event_base) != RRScreenChangeNotify)
+-    return FALSE;
+-
+-  XRRUpdateConfiguration (event);
+-
+   meta_monitor_manager_read_current_state (manager);
+ 
+   gpu_xrandr = META_GPU_XRANDR (manager_xrandr->gpu);
+   resources = meta_gpu_xrandr_get_resources (gpu_xrandr);
+ 
+   timestamp = resources->timestamp;
+   if (is_xvnc (manager))
+     timestamp += 100;
+ 
+   is_hotplug = timestamp < resources->configTimestamp;
+   is_our_configuration = (resources->timestamp ==
+                           manager_xrandr->last_xrandr_set_timestamp);
+   if (is_hotplug)
+     {
+       meta_monitor_manager_on_hotplug (manager);
+     }
+   else
+     {
+       MetaMonitorsConfig *config;
+ 
+       if (is_our_configuration)
+         {
+           MetaMonitorConfigManager *config_manager =
+             meta_monitor_manager_get_config_manager (manager);
+ 
+           config = meta_monitor_config_manager_get_current (config_manager);
+         }
+       else
+         {
+           config = NULL;
+         }
+ 
+       meta_monitor_manager_xrandr_rebuild_derived (manager, config);
+     }
++}
++
++gboolean
++meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xrandr,
++					   XEvent                   *event)
++{
++
++  if ((event->type - manager_xrandr->rr_event_base) != RRScreenChangeNotify)
++    return FALSE;
++
++  XRRUpdateConfiguration (event);
++
++  meta_monitor_manager_xrandr_update (manager_xrandr);
+ 
+   return TRUE;
+ }
+-- 
+2.17.1
+

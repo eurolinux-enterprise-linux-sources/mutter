@@ -1,0 +1,59 @@
+From 6a807a31b5d762797850948761d66c1ab4fbfd7b Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Fri, 15 Sep 2017 09:39:18 +0200
+Subject: [PATCH] Revert "build: Require libgudev >= 232"
+
+This reverts commit 361bf847af82c7dca097302fe64c575079280c9c.
+---
+ configure.ac                                   | 4 ++--
+ src/backends/native/meta-launcher.c            | 2 ++
+ src/backends/native/meta-monitor-manager-kms.c | 3 +++
+ 3 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index e6b2bf8..2fde187 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -227,10 +227,10 @@ AC_MSG_CHECKING([gudev])
+ if test x$with_gudev = xno ; then
+   AC_MSG_RESULT([disabled])
+ else
+-  if $PKG_CONFIG --exists "gudev-1.0 >= 232"; then
++  if $PKG_CONFIG --exists gudev-1.0; then
+     have_gudev=yes
+     AC_MSG_RESULT(yes)
+-    MUTTER_PC_MODULES="$MUTTER_PC_MODULES gudev-1.0 >= 232"
++    MUTTER_PC_MODULES="$MUTTER_PC_MODULES gudev-1.0"
+     AC_DEFINE([HAVE_LIBGUDEV], 1, [Building with gudev for device type detection])
+   else
+     AC_MSG_RESULT(no)
+diff --git a/src/backends/native/meta-launcher.c b/src/backends/native/meta-launcher.c
+index 8b066c9..22ea2ad 100644
+--- a/src/backends/native/meta-launcher.c
++++ b/src/backends/native/meta-launcher.c
+@@ -46,6 +46,8 @@
+ #include "meta-cursor-renderer-native.h"
+ #include "meta-renderer-native.h"
+ 
++G_DEFINE_AUTOPTR_CLEANUP_FUNC(GUdevClient, g_object_unref)
++
+ struct _MetaLauncher
+ {
+   Login1Session *session_proxy;
+diff --git a/src/backends/native/meta-monitor-manager-kms.c b/src/backends/native/meta-monitor-manager-kms.c
+index 1a2eaec..2a13cdb 100644
+--- a/src/backends/native/meta-monitor-manager-kms.c
++++ b/src/backends/native/meta-monitor-manager-kms.c
+@@ -52,6 +52,9 @@
+ 
+ #define DRM_CARD_UDEV_DEVICE_TYPE "drm_minor"
+ 
++G_DEFINE_AUTOPTR_CLEANUP_FUNC(GUdevDevice, g_object_unref)
++G_DEFINE_AUTOPTR_CLEANUP_FUNC(GUdevEnumerator, g_object_unref)
++
+ typedef struct
+ {
+   GSource source;
+-- 
+1.8.3.1
+

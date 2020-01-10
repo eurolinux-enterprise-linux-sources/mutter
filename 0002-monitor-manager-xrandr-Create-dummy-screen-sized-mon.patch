@@ -1,0 +1,171 @@
+From 8950fc632bcf4c3eca2be1c347acaa16b4b8d0c5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 3 Oct 2018 10:50:47 +0200
+Subject: [PATCH 2/2] monitor-manager/xrandr: Create dummy screen sized monitor
+ if no RANDR
+
+When there is no RANDR support enabled in the X server, we wont get
+notified of any monitors, resulting in mutter believing we're being
+headless. To get at least something working, although with no way
+configuration ability, lets pretend the whole screen is just a single
+monitor with a single output, crtc and mode.
+---
+ src/backends/x11/meta-gpu-xrandr.c            | 60 +++++++++++++++++++
+ .../x11/meta-monitor-manager-xrandr.c         | 20 +++++++
+ .../x11/meta-monitor-manager-xrandr.h         |  2 +
+ 3 files changed, 82 insertions(+)
+
+diff --git a/src/backends/x11/meta-gpu-xrandr.c b/src/backends/x11/meta-gpu-xrandr.c
+index a4e187a49a..9397c1f64d 100644
+--- a/src/backends/x11/meta-gpu-xrandr.c
++++ b/src/backends/x11/meta-gpu-xrandr.c
+@@ -147,6 +147,63 @@ update_screen_size (MetaMonitorManagerXrandr *monitor_manager_xrandr)
+   monitor_manager->screen_height = HeightOfScreen (screen);
+ }
+ 
++static gboolean
++read_current_fallback (MetaGpuXrandr            *gpu_xrandr,
++                       MetaMonitorManagerXrandr *monitor_manager_xrandr)
++{
++  MetaGpu *gpu = META_GPU (gpu_xrandr);
++  MetaMonitorManager *monitor_manager =
++    META_MONITOR_MANAGER (monitor_manager_xrandr);
++  MetaCrtcMode *mode;
++  MetaCrtc *crtc;
++  MetaOutput *output;
++
++  update_dpms_state (monitor_manager_xrandr);
++  update_screen_size (monitor_manager_xrandr);
++
++  mode = g_object_new (META_TYPE_CRTC_MODE, NULL);
++  mode->mode_id = 0;
++  mode->width = monitor_manager->screen_width;
++  mode->height = monitor_manager->screen_height;
++  mode->refresh_rate = 60.0;
++  mode->name = g_strdup_printf ("%dx%d", mode->width, mode->height);
++
++  meta_gpu_take_modes (gpu, g_list_prepend (NULL, mode));
++
++  crtc = g_object_new (META_TYPE_CRTC, NULL);
++  crtc->gpu = gpu;
++  crtc->crtc_id = 0;
++  crtc->rect = (MetaRectangle) { .width = mode->width, .height = mode->height };
++  crtc->current_mode = mode;
++
++  meta_gpu_take_crtcs (gpu, g_list_prepend (NULL, crtc));
++
++  output = g_object_new (META_TYPE_OUTPUT, NULL);
++  output->gpu = gpu;
++  output->winsys_id = 0;
++  output->name = g_strdup ("X11 Screen");
++  output->vendor = g_strdup ("unknown");
++  output->product = g_strdup ("unknown");
++  output->serial = g_strdup ("unknown");
++  output->hotplug_mode_update = TRUE;
++  output->suggested_x = -1;
++  output->suggested_y = -1;
++  output->connector_type = META_CONNECTOR_TYPE_Unknown;
++  output->modes = g_new0 (MetaCrtcMode *, 1);
++  output->modes[0] = mode;
++  output->n_modes = 1;
++  output->preferred_mode = mode;
++  output->possible_crtcs = g_new0 (MetaCrtc *, 1);
++  output->possible_crtcs[0] = crtc;
++  output->n_possible_crtcs = 1;
++  meta_output_assign_crtc (output, crtc);
++  output->is_primary = TRUE;
++
++  meta_gpu_take_outputs (gpu, g_list_prepend (NULL, output));
++
++  return TRUE;
++}
++
+ static gboolean
+ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+                               GError  **error)
+@@ -166,6 +223,9 @@ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+   GList *modes = NULL;
+   GList *crtcs = NULL;
+ 
++  if (!meta_monitor_manager_xrandr_has_randr (monitor_manager_xrandr))
++    return read_current_fallback (gpu_xrandr, monitor_manager_xrandr);
++
+   if (gpu_xrandr->resources)
+     XRRFreeScreenResources (gpu_xrandr->resources);
+   gpu_xrandr->resources = NULL;
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.c b/src/backends/x11/meta-monitor-manager-xrandr.c
+index d0da2c539e..26b057a559 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.c
++++ b/src/backends/x11/meta-monitor-manager-xrandr.c
+@@ -64,6 +64,7 @@ struct _MetaMonitorManagerXrandr
+   guint logind_watch_id;
+   guint logind_signal_sub_id;
+ 
++  gboolean has_randr;
+   gboolean has_randr15;
+ 
+   /*
+@@ -107,6 +108,12 @@ meta_monitor_manager_xrandr_get_xdisplay (MetaMonitorManagerXrandr *manager_xran
+   return manager_xrandr->xdisplay;
+ }
+ 
++gboolean
++meta_monitor_manager_xrandr_has_randr (MetaMonitorManagerXrandr *manager_xrandr)
++{
++  return manager_xrandr->has_randr;
++}
++
+ gboolean
+ meta_monitor_manager_xrandr_has_randr15 (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+@@ -577,9 +584,18 @@ meta_monitor_manager_xrandr_apply_monitors_config (MetaMonitorManager      *mana
+                                                    MetaMonitorsConfigMethod method,
+                                                    GError                 **error)
+ {
++  MetaMonitorManagerXrandr *manager_xrandr =
++    META_MONITOR_MANAGER_XRANDR (manager);
+   GPtrArray *crtc_infos;
+   GPtrArray *output_infos;
+ 
++  if (!manager_xrandr->has_randr)
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Tried to change configuration without XRANDR support");
++      return FALSE;
++    }
++
+   if (!config)
+     {
+       meta_monitor_manager_xrandr_rebuild_derived (manager, NULL);
+@@ -1046,11 +1062,15 @@ meta_monitor_manager_xrandr_constructed (GObject *object)
+ 			  &manager_xrandr->rr_event_base,
+ 			  &manager_xrandr->rr_error_base))
+     {
++      g_warning ("No RANDR support, monitor configuration disabled");
+       return;
+     }
+   else
+     {
+       int major_version, minor_version;
++
++      manager_xrandr->has_randr = TRUE;
++
+       /* We only use ScreenChangeNotify, but GDK uses the others,
+ 	 and we don't want to step on its toes */
+       XRRSelectInput (manager_xrandr->xdisplay,
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.h b/src/backends/x11/meta-monitor-manager-xrandr.h
+index f09cbfd83a..343c8131ee 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.h
++++ b/src/backends/x11/meta-monitor-manager-xrandr.h
+@@ -33,6 +33,8 @@ G_DECLARE_FINAL_TYPE (MetaMonitorManagerXrandr, meta_monitor_manager_xrandr,
+ 
+ Display * meta_monitor_manager_xrandr_get_xdisplay (MetaMonitorManagerXrandr *manager_xrandr);
+ 
++gboolean meta_monitor_manager_xrandr_has_randr (MetaMonitorManagerXrandr *manager_xrandr);
++
+ gboolean meta_monitor_manager_xrandr_has_randr15 (MetaMonitorManagerXrandr *manager_xrandr);
+ 
+ gboolean meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager,
+-- 
+2.17.1
+

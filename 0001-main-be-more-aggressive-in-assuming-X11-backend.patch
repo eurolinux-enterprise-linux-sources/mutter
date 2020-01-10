@@ -1,0 +1,132 @@
+From 5e3a6efd0e2bbea040e203b996e7d00ab3431cfa Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Tue, 13 Feb 2018 09:44:50 -0500
+Subject: [PATCH] main: be more aggressive in assuming X11 backend
+
+If the session is started by vncserver right now, the
+XDG_SESSION_TYPE won't be X11.  Ideally that would be
+fixed, but for backward compatibility we should default
+to X11 if the session type isn't set to wayland explicitly.
+---
+ src/core/main.c | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/src/core/main.c b/src/core/main.c
+index 079f6a9ef..8e8bc3f77 100644
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -304,108 +304,106 @@ meta_finalize (void)
+ 
+ #ifdef HAVE_WAYLAND
+   if (meta_is_wayland_compositor ())
+     meta_wayland_finalize ();
+ #endif
+ }
+ 
+ static gboolean
+ on_sigterm (gpointer user_data)
+ {
+   meta_quit (EXIT_SUCCESS);
+ 
+   return G_SOURCE_REMOVE;
+ }
+ 
+ #if defined(HAVE_WAYLAND) && defined(HAVE_NATIVE_BACKEND)
+ static gboolean
+ session_type_is_supported (const char *session_type)
+ {
+    return (g_strcmp0 (session_type, "x11") == 0) ||
+           (g_strcmp0 (session_type, "wayland") == 0);
+ }
+ 
+ static char *
+ find_session_type (void)
+ {
+   char **sessions = NULL;
+   char *session_id;
+   char *session_type;
+   const char *session_type_env;
+-  gboolean is_tty = FALSE;
+   int ret, i;
+ 
+   ret = sd_pid_get_session (0, &session_id);
+   if (ret == 0 && session_id != NULL)
+     {
+       ret = sd_session_get_type (session_id, &session_type);
+       free (session_id);
+ 
+       if (ret == 0)
+         {
+           if (session_type_is_supported (session_type))
+             goto out;
+-          else
+-            is_tty = g_strcmp0 (session_type, "tty") == 0;
++
+           free (session_type);
+         }
+     }
+   else if (sd_uid_get_sessions (getuid (), 1, &sessions) > 0)
+     {
+       for (i = 0; sessions[i] != NULL; i++)
+         {
+           ret = sd_session_get_type (sessions[i], &session_type);
+ 
+           if (ret < 0)
+             continue;
+ 
+           if (session_type_is_supported (session_type))
+             {
+               g_strfreev (sessions);
+               goto out;
+             }
+ 
+           free (session_type);
+         }
+     }
+   g_strfreev (sessions);
+ 
+   session_type_env = g_getenv ("XDG_SESSION_TYPE");
+   if (session_type_is_supported (session_type_env))
+     {
+       /* The string should be freeable */
+       session_type = strdup (session_type_env);
+       goto out;
+     }
+ 
+-  /* Legacy support for starting through xinit */
+-  if (is_tty && (g_getenv ("MUTTER_DISPLAY") || g_getenv ("DISPLAY")))
++  /* Legacy support for starting through xinit or vncserver */
++  if (g_getenv ("MUTTER_DISPLAY") || g_getenv ("DISPLAY"))
+     {
+       session_type = strdup ("x11");
+       goto out;
+     }
+ 
+   meta_warning ("Unsupported session type\n");
+   meta_exit (META_EXIT_ERROR);
+ 
+ out:
+   return session_type;
+ }
+ 
+ static gboolean
+ check_for_wayland_session_type (void)
+ {
+   char *session_type;
+   gboolean is_wayland;
+ 
+   session_type = find_session_type ();
+   is_wayland = g_strcmp0 (session_type, "wayland") == 0;
+   free (session_type);
+ 
+   return is_wayland;
+ }
+ #endif
+ 
+ /*
+  * Determine the compositor configuration, i.e. whether to run as a Wayland
+  * compositor, as well as what backend to use.
+  *
+-- 
+2.14.3
+

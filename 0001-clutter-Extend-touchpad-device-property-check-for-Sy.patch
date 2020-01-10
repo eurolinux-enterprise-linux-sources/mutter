@@ -1,0 +1,61 @@
+From 424e37231a0930594d4363477e7515e006b3dac1 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Tue, 13 Feb 2018 11:44:40 +0100
+Subject: [PATCH] clutter: Extend touchpad device property check for Synaptics
+
+So we reliably get CLUTTER_TOUCHPAD_DEVICE for those. The other heuristics
+to get the device type may fall short.
+---
+ clutter/clutter/x11/clutter-device-manager-xi2.c | 22 +++++++++++++++++++---
+ 1 file changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/clutter/clutter/x11/clutter-device-manager-xi2.c b/clutter/clutter/x11/clutter-device-manager-xi2.c
+index d2610cc..fcba55c 100644
+--- a/clutter/clutter/x11/clutter-device-manager-xi2.c
++++ b/clutter/clutter/x11/clutter-device-manager-xi2.c
+@@ -267,8 +267,9 @@ is_touch_device (XIAnyClassInfo         **classes,
+ }
+ 
+ static gboolean
+-is_touchpad_device (ClutterBackendX11 *backend_x11,
+-                    XIDeviceInfo      *info)
++query_exists_device_property (ClutterBackendX11 *backend_x11,
++                              XIDeviceInfo      *info,
++                              const gchar       *property)
+ {
+   gulong nitems, bytes_after;
+   guint32 *data = NULL;
+@@ -276,7 +277,7 @@ is_touchpad_device (ClutterBackendX11 *backend_x11,
+   Atom type;
+   Atom prop;
+ 
+-  prop = XInternAtom (backend_x11->xdpy, "libinput Tapping Enabled", True);
++  prop = XInternAtom (backend_x11->xdpy, property, True);
+   if (prop == None)
+     return FALSE;
+ 
+@@ -298,6 +299,21 @@ is_touchpad_device (ClutterBackendX11 *backend_x11,
+ }
+ 
+ static gboolean
++is_touchpad_device (ClutterBackendX11 *backend_x11,
++                    XIDeviceInfo      *info)
++{
++  if (query_exists_device_property (backend_x11, info,
++                                    "libinput Tapping Enabled"))
++    return TRUE;
++
++  if (query_exists_device_property (backend_x11, info,
++                                    "Synaptics Off"))
++    return TRUE;
++
++  return FALSE;
++}
++
++static gboolean
+ get_device_ids (ClutterBackendX11  *backend_x11,
+                 XIDeviceInfo       *info,
+                 gchar             **vendor_id,
+-- 
+1.8.3.1
+

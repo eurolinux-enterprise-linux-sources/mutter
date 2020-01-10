@@ -1,0 +1,25 @@
+From 85968e1d0996b7f3a7453076c88ed6d5e0113369 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Wed, 20 Sep 2017 12:17:23 +0200
+Subject: [PATCH] wayland: enable scale-monitor-framebuffer by default
+
+---
+ data/org.gnome.mutter.gschema.xml.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/data/org.gnome.mutter.gschema.xml.in b/data/org.gnome.mutter.gschema.xml.in
+index d926312c8..bec5585bd 100644
+--- a/data/org.gnome.mutter.gschema.xml.in
++++ b/data/org.gnome.mutter.gschema.xml.in
+@@ -103,7 +103,7 @@
+     </key>
+ 
+     <key name="experimental-features" type="as">
+-      <default>[]</default>
++      <default>['scale-monitor-framebuffer']</default>
+       <summary>Enable experimental features</summary>
+       <description>
+         To enable experimental features, add the feature keyword to the list.
+-- 
+2.13.5
+

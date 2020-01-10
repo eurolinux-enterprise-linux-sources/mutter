@@ -1,0 +1,35 @@
+From 97f5f9bdc1c5cb1a2e02ec04750b5db9a4b4fdf1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Fri, 12 May 2017 13:40:31 +0200
+Subject: [PATCH 8/8] window-actor: Special-case shaped Java windows
+
+OpenJDK wrongly assumes that shaping a window implies no shadows.
+They got lucky until commit b975676c changed the fallback case,
+but now their compliance tests are broken. Make them happy again
+by special-casing shaped Java windows.
+---
+ src/compositor/meta-window-actor.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/compositor/meta-window-actor.c b/src/compositor/meta-window-actor.c
+index 773e6d09d..ac072997c 100644
+--- a/src/compositor/meta-window-actor.c
++++ b/src/compositor/meta-window-actor.c
+@@ -843,6 +843,14 @@ meta_window_actor_has_shadow (MetaWindowActor *self)
+   if (priv->window->has_custom_frame_extents)
+     return FALSE;
+ 
++  /*
++   * OpenJDK wrongly assumes that shaping a window implies no compositor
++   * shadows; make its compliance tests happy to give it what it wants ...
++   */
++  if (g_strcmp0 (priv->window->res_name, "sun-awt-X11-XWindowPeer") == 0 &&
++      priv->window->shape_region != NULL)
++    return FALSE;
++
+   /*
+    * Generate shadows for all other windows.
+    */
+-- 
+2.14.2
+

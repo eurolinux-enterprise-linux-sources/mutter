@@ -1,0 +1,3006 @@
+diff --git a/src/Makefile.am b/src/Makefile.am
+index bcb3505c7..5bbac70e8 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -114,6 +114,8 @@ libmutter_@LIBMUTTER_API_VERSION@_la_SOURCES =	\
+ 	backends/meta-cursor-tracker-private.h	\
+ 	backends/meta-cursor-renderer.c		\
+ 	backends/meta-cursor-renderer.h		\
++	backends/meta-cursor-sprite-xcursor.c	\
++	backends/meta-cursor-sprite-xcursor.h	\
+ 	backends/meta-dnd-private.h		\
+ 	backends/meta-egl.c			\
+ 	backends/meta-egl.h			\
+@@ -176,6 +178,8 @@ libmutter_@LIBMUTTER_API_VERSION@_la_SOURCES =	\
+ 	backends/x11/meta-gpu-xrandr.h			\
+ 	backends/x11/cm/meta-backend-x11-cm.c		\
+ 	backends/x11/cm/meta-backend-x11-cm.h		\
++	backends/x11/cm/meta-cursor-sprite-xfixes.c	\
++	backends/x11/cm/meta-cursor-sprite-xfixes.h	\
+ 	backends/x11/cm/meta-renderer-x11-cm.c		\
+ 	backends/x11/cm/meta-renderer-x11-cm.h		\
+ 	backends/x11/nested/meta-backend-x11-nested.c	\
+@@ -370,6 +374,8 @@ if HAVE_WAYLAND
+ libmutter_@LIBMUTTER_API_VERSION@_la_SOURCES +=	\
+ 	compositor/meta-surface-actor-wayland.c	\
+ 	compositor/meta-surface-actor-wayland.h	\
++	wayland/meta-cursor-sprite-wayland.c	\
++	wayland/meta-cursor-sprite-wayland.h	\
+ 	wayland/meta-wayland.c			\
+ 	wayland/meta-wayland.h			\
+ 	wayland/meta-wayland-private.h		\
+@@ -431,10 +437,10 @@ libmutter_@LIBMUTTER_API_VERSION@_la_SOURCES +=	\
+ 	wayland/meta-wayland-touch.h		\
+ 	wayland/meta-wayland-surface.c		\
+ 	wayland/meta-wayland-surface.h		\
+-	wayland/meta-wayland-surface-role-cursor.c	\
+-	wayland/meta-wayland-surface-role-cursor.h	\
+-	wayland/meta-wayland-surface-role-tablet-cursor.c	\
+-	wayland/meta-wayland-surface-role-tablet-cursor.h	\
++	wayland/meta-wayland-cursor-surface.c	\
++	wayland/meta-wayland-cursor-surface.h	\
++	wayland/meta-wayland-tablet-cursor-surface.c	\
++	wayland/meta-wayland-tablet-cursor-surface.h	\
+ 	wayland/meta-wayland-actor-surface.c	\
+ 	wayland/meta-wayland-actor-surface.h	\
+ 	wayland/meta-wayland-subsurface.c	\
+diff --git a/src/backends/meta-cursor-renderer.c b/src/backends/meta-cursor-renderer.c
+index f6470e66a..eb79737f1 100644
+--- a/src/backends/meta-cursor-renderer.c
++++ b/src/backends/meta-cursor-renderer.c
+@@ -193,8 +193,8 @@ meta_cursor_renderer_calculate_rect (MetaCursorRenderer *renderer,
+ }
+ 
+ static void
+-update_cursor (MetaCursorRenderer *renderer,
+-               MetaCursorSprite   *cursor_sprite)
++meta_cursor_renderer_update_cursor (MetaCursorRenderer *renderer,
++                                    MetaCursorSprite   *cursor_sprite)
+ {
+   MetaCursorRendererPrivate *priv = meta_cursor_renderer_get_instance_private (renderer);
+   gboolean handled_by_backend;
+@@ -237,7 +237,7 @@ meta_cursor_renderer_set_cursor (MetaCursorRenderer *renderer,
+     return;
+   priv->displayed_cursor = cursor_sprite;
+ 
+-  update_cursor (renderer, cursor_sprite);
++  meta_cursor_renderer_update_cursor (renderer, cursor_sprite);
+ }
+ 
+ void
+@@ -246,7 +246,7 @@ meta_cursor_renderer_force_update (MetaCursorRenderer *renderer)
+   MetaCursorRendererPrivate *priv =
+     meta_cursor_renderer_get_instance_private (renderer);
+ 
+-  update_cursor (renderer, priv->displayed_cursor);
++  meta_cursor_renderer_update_cursor (renderer, priv->displayed_cursor);
+ }
+ 
+ void
+@@ -261,7 +261,7 @@ meta_cursor_renderer_set_position (MetaCursorRenderer *renderer,
+   priv->current_x = x;
+   priv->current_y = y;
+ 
+-  update_cursor (renderer, priv->displayed_cursor);
++  meta_cursor_renderer_update_cursor (renderer, priv->displayed_cursor);
+ }
+ 
+ ClutterPoint
+@@ -283,28 +283,3 @@ meta_cursor_renderer_get_cursor (MetaCursorRenderer *renderer)
+ 
+   return priv->displayed_cursor;
+ }
+-
+-#ifdef HAVE_WAYLAND
+-void
+-meta_cursor_renderer_realize_cursor_from_wl_buffer (MetaCursorRenderer *renderer,
+-                                                    MetaCursorSprite   *cursor_sprite,
+-                                                    struct wl_resource *buffer)
+-{
+-
+-  MetaCursorRendererClass *renderer_class = META_CURSOR_RENDERER_GET_CLASS (renderer);
+-
+-  if (renderer_class->realize_cursor_from_wl_buffer)
+-    renderer_class->realize_cursor_from_wl_buffer (renderer, cursor_sprite, buffer);
+-}
+-#endif
+-
+-void
+-meta_cursor_renderer_realize_cursor_from_xcursor (MetaCursorRenderer *renderer,
+-                                                  MetaCursorSprite   *cursor_sprite,
+-                                                  XcursorImage       *xc_image)
+-{
+-  MetaCursorRendererClass *renderer_class = META_CURSOR_RENDERER_GET_CLASS (renderer);
+-
+-  if (renderer_class->realize_cursor_from_xcursor)
+-    renderer_class->realize_cursor_from_xcursor (renderer, cursor_sprite, xc_image);
+-}
+diff --git a/src/backends/meta-cursor-renderer.h b/src/backends/meta-cursor-renderer.h
+index 1691f4471..830d16ef6 100644
+--- a/src/backends/meta-cursor-renderer.h
++++ b/src/backends/meta-cursor-renderer.h
+@@ -26,10 +26,6 @@
+ #define META_CURSOR_RENDERER_H
+ 
+ #include <glib-object.h>
+-#include <X11/Xcursor/Xcursor.h>
+-#ifdef HAVE_WAYLAND
+-#include <wayland-server.h>
+-#endif
+ 
+ #include <meta/screen.h>
+ #include "meta-cursor.h"
+@@ -44,14 +40,6 @@ struct _MetaCursorRendererClass
+ 
+   gboolean (* update_cursor) (MetaCursorRenderer *renderer,
+                               MetaCursorSprite   *cursor_sprite);
+-#ifdef HAVE_WAYLAND
+-  void (* realize_cursor_from_wl_buffer) (MetaCursorRenderer *renderer,
+-                                          MetaCursorSprite *cursor_sprite,
+-                                          struct wl_resource *buffer);
+-#endif
+-  void (* realize_cursor_from_xcursor) (MetaCursorRenderer *renderer,
+-                                        MetaCursorSprite *cursor_sprite,
+-                                        XcursorImage *xc_image);
+ };
+ 
+ MetaCursorRenderer * meta_cursor_renderer_new (void);
+@@ -70,16 +58,6 @@ MetaCursorSprite * meta_cursor_renderer_get_cursor (MetaCursorRenderer *renderer
+ ClutterRect meta_cursor_renderer_calculate_rect (MetaCursorRenderer *renderer,
+                                                  MetaCursorSprite   *cursor_sprite);
+ 
+-#ifdef HAVE_WAYLAND
+-void meta_cursor_renderer_realize_cursor_from_wl_buffer (MetaCursorRenderer *renderer,
+-                                                         MetaCursorSprite   *cursor_sprite,
+-                                                         struct wl_resource *buffer);
+-#endif
+-
+-void meta_cursor_renderer_realize_cursor_from_xcursor (MetaCursorRenderer *renderer,
+-                                                       MetaCursorSprite   *cursor_sprite,
+-                                                       XcursorImage       *xc_image);
+-
+ void meta_cursor_renderer_emit_painted (MetaCursorRenderer *renderer,
+                                         MetaCursorSprite   *cursor_sprite);
+ 
+diff --git a/src/backends/meta-cursor-sprite-xcursor.c b/src/backends/meta-cursor-sprite-xcursor.c
+new file mode 100644
+index 000000000..657c1dae8
+--- /dev/null
++++ b/src/backends/meta-cursor-sprite-xcursor.c
+@@ -0,0 +1,292 @@
++/*
++ * Copyright 2013, 2018 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include "config.h"
++
++#include "backends/meta-cursor-sprite-xcursor.h"
++
++#include "backends/meta-cursor.h"
++#include "backends/meta-cursor-renderer.h"
++#include "clutter/clutter.h"
++#include "cogl/cogl.h"
++#include "meta/prefs.h"
++
++struct _MetaCursorSpriteXcursor
++{
++  MetaCursorSprite parent;
++
++  MetaCursor cursor;
++
++  int current_frame;
++  XcursorImages *xcursor_images;
++
++  int theme_scale;
++  gboolean theme_dirty;
++};
++
++G_DEFINE_TYPE (MetaCursorSpriteXcursor, meta_cursor_sprite_xcursor,
++               META_TYPE_CURSOR_SPRITE)
++
++static const char *
++translate_meta_cursor (MetaCursor cursor)
++{
++  switch (cursor)
++    {
++    case META_CURSOR_DEFAULT:
++      return "left_ptr";
++    case META_CURSOR_NORTH_RESIZE:
++      return "top_side";
++    case META_CURSOR_SOUTH_RESIZE:
++      return "bottom_side";
++    case META_CURSOR_WEST_RESIZE:
++      return "left_side";
++    case META_CURSOR_EAST_RESIZE:
++      return "right_side";
++    case META_CURSOR_SE_RESIZE:
++      return "bottom_right_corner";
++    case META_CURSOR_SW_RESIZE:
++      return "bottom_left_corner";
++    case META_CURSOR_NE_RESIZE:
++      return "top_right_corner";
++    case META_CURSOR_NW_RESIZE:
++      return "top_left_corner";
++    case META_CURSOR_MOVE_OR_RESIZE_WINDOW:
++      return "fleur";
++    case META_CURSOR_BUSY:
++      return "watch";
++    case META_CURSOR_DND_IN_DRAG:
++      return "dnd-none";
++    case META_CURSOR_DND_MOVE:
++      return "dnd-move";
++    case META_CURSOR_DND_COPY:
++      return "dnd-copy";
++    case META_CURSOR_DND_UNSUPPORTED_TARGET:
++      return "dnd-none";
++    case META_CURSOR_POINTING_HAND:
++      return "hand2";
++    case META_CURSOR_CROSSHAIR:
++      return "crosshair";
++    case META_CURSOR_IBEAM:
++      return "xterm";
++    default:
++      break;
++    }
++
++  g_assert_not_reached ();
++}
++
++MetaCursor
++meta_cursor_sprite_xcursor_get_cursor (MetaCursorSpriteXcursor *sprite_xcursor)
++{
++  return sprite_xcursor->cursor;
++}
++
++Cursor
++meta_create_x_cursor (Display    *xdisplay,
++                      MetaCursor  cursor)
++{
++  return XcursorLibraryLoadCursor (xdisplay, translate_meta_cursor (cursor));
++}
++
++static XcursorImages *
++load_cursor_on_client (MetaCursor cursor, int scale)
++{
++  return XcursorLibraryLoadImages (translate_meta_cursor (cursor),
++                                   meta_prefs_get_cursor_theme (),
++                                   meta_prefs_get_cursor_size () * scale);
++}
++
++static void
++load_from_current_xcursor_image (MetaCursorSpriteXcursor *sprite_xcursor)
++{
++  MetaCursorSprite *sprite = META_CURSOR_SPRITE (sprite_xcursor);
++  XcursorImage *xc_image;
++  int width, height, rowstride;
++  CoglPixelFormat cogl_format;
++  ClutterBackend *clutter_backend;
++  CoglContext *cogl_context;
++  CoglTexture2D *texture;
++  CoglError *error = NULL;
++
++  g_assert (!meta_cursor_sprite_get_cogl_texture (sprite));
++
++  xc_image = meta_cursor_sprite_xcursor_get_current_image (sprite_xcursor);
++  width = (int) xc_image->width;
++  height = (int) xc_image->height;
++  rowstride = width * 4;
++
++#if G_BYTE_ORDER == G_LITTLE_ENDIAN
++  cogl_format = COGL_PIXEL_FORMAT_BGRA_8888;
++#else
++  cogl_format = COGL_PIXEL_FORMAT_ARGB_8888;
++#endif
++
++  clutter_backend = clutter_get_default_backend ();
++  cogl_context = clutter_backend_get_cogl_context (clutter_backend);
++  texture = cogl_texture_2d_new_from_data (cogl_context,
++                                           width, height,
++                                           cogl_format,
++                                           rowstride,
++                                           (uint8_t *) xc_image->pixels,
++                                           &error);
++  if (!texture)
++    {
++      g_warning ("Failed to allocate cursor texture: %s\n", error->message);
++      cogl_error_free (error);
++    }
++
++  meta_cursor_sprite_set_texture (sprite,
++                                  COGL_TEXTURE (texture),
++                                  xc_image->xhot, xc_image->yhot);
++
++  if (texture)
++    cogl_object_unref (texture);
++}
++
++void
++meta_cursor_sprite_xcursor_set_theme_scale (MetaCursorSpriteXcursor *sprite_xcursor,
++                                            int                      theme_scale)
++{
++  if (sprite_xcursor->theme_scale != theme_scale)
++    sprite_xcursor->theme_dirty = TRUE;
++  sprite_xcursor->theme_scale = theme_scale;
++}
++
++
++static gboolean
++meta_cursor_sprite_xcursor_is_animated (MetaCursorSprite *sprite)
++{
++  MetaCursorSpriteXcursor *sprite_xcursor = META_CURSOR_SPRITE_XCURSOR (sprite);
++
++  return (sprite_xcursor->xcursor_images &&
++          sprite_xcursor->xcursor_images->nimage > 1);
++}
++
++XcursorImage *
++meta_cursor_sprite_xcursor_get_current_image (MetaCursorSpriteXcursor *sprite_xcursor)
++{
++  return sprite_xcursor->xcursor_images->images[sprite_xcursor->current_frame];
++}
++
++static void
++meta_cursor_sprite_xcursor_tick_frame (MetaCursorSprite *sprite)
++{
++  MetaCursorSpriteXcursor *sprite_xcursor = META_CURSOR_SPRITE_XCURSOR (sprite);
++
++  if (!meta_cursor_sprite_is_animated (sprite))
++    return;
++
++  sprite_xcursor->current_frame++;
++
++  if (sprite_xcursor->current_frame >= sprite_xcursor->xcursor_images->nimage)
++    sprite_xcursor->current_frame = 0;
++
++  meta_cursor_sprite_clear_texture (sprite);
++  load_from_current_xcursor_image (sprite_xcursor);
++}
++
++static unsigned int
++meta_cursor_sprite_xcursor_get_current_frame_time (MetaCursorSprite *sprite)
++{
++  MetaCursorSpriteXcursor *sprite_xcursor = META_CURSOR_SPRITE_XCURSOR (sprite);
++  XcursorImages *xcursor_images;
++
++  g_return_val_if_fail (meta_cursor_sprite_is_animated (sprite), 0);
++
++  xcursor_images = sprite_xcursor->xcursor_images;
++  return xcursor_images->images[sprite_xcursor->current_frame]->delay;
++}
++
++static void
++load_cursor_from_theme (MetaCursorSprite *sprite)
++{
++  MetaCursorSpriteXcursor *sprite_xcursor = META_CURSOR_SPRITE_XCURSOR (sprite);
++
++  g_assert (sprite_xcursor->cursor != META_CURSOR_NONE);
++
++  sprite_xcursor->theme_dirty = FALSE;
++
++  /* We might be reloading with a different scale. If so clear the old data. */
++  if (sprite_xcursor->xcursor_images)
++    {
++      meta_cursor_sprite_clear_texture (sprite);
++      XcursorImagesDestroy (sprite_xcursor->xcursor_images);
++    }
++
++  sprite_xcursor->current_frame = 0;
++  sprite_xcursor->xcursor_images =
++    load_cursor_on_client (sprite_xcursor->cursor,
++                           sprite_xcursor->theme_scale);
++  if (!sprite_xcursor->xcursor_images)
++    g_error ("Could not find cursor. Perhaps set XCURSOR_PATH?");
++
++  load_from_current_xcursor_image (sprite_xcursor);
++}
++
++static void
++meta_cursor_sprite_xcursor_realize_texture (MetaCursorSprite *sprite)
++{
++  MetaCursorSpriteXcursor *sprite_xcursor = META_CURSOR_SPRITE_XCURSOR (sprite);
++
++  if (sprite_xcursor->theme_dirty)
++    load_cursor_from_theme (sprite);
++}
++
++MetaCursorSpriteXcursor *
++meta_cursor_sprite_xcursor_new (MetaCursor cursor)
++{
++  MetaCursorSpriteXcursor *sprite_xcursor;
++
++  sprite_xcursor = g_object_new (META_TYPE_CURSOR_SPRITE_XCURSOR, NULL);
++  sprite_xcursor->cursor = cursor;
++
++  return sprite_xcursor;
++}
++
++static void
++meta_cursor_sprite_xcursor_finalize (GObject *object)
++{
++  MetaCursorSpriteXcursor *sprite_xcursor = META_CURSOR_SPRITE_XCURSOR (object);
++
++  g_clear_pointer (&sprite_xcursor->xcursor_images,
++                   XcursorImagesDestroy);
++
++  G_OBJECT_CLASS (meta_cursor_sprite_xcursor_parent_class)->finalize (object);
++}
++
++static void
++meta_cursor_sprite_xcursor_init (MetaCursorSpriteXcursor *sprite_xcursor)
++{
++  sprite_xcursor->theme_dirty = TRUE;
++}
++
++static void
++meta_cursor_sprite_xcursor_class_init (MetaCursorSpriteXcursorClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++  MetaCursorSpriteClass *cursor_sprite_class = META_CURSOR_SPRITE_CLASS (klass);
++
++  object_class->finalize = meta_cursor_sprite_xcursor_finalize;
++
++  cursor_sprite_class->realize_texture =
++    meta_cursor_sprite_xcursor_realize_texture;
++  cursor_sprite_class->is_animated = meta_cursor_sprite_xcursor_is_animated;
++  cursor_sprite_class->tick_frame = meta_cursor_sprite_xcursor_tick_frame;
++  cursor_sprite_class->get_current_frame_time =
++    meta_cursor_sprite_xcursor_get_current_frame_time;
++}
+diff --git a/src/backends/meta-cursor-sprite-xcursor.h b/src/backends/meta-cursor-sprite-xcursor.h
+new file mode 100644
+index 000000000..dbc927484
+--- /dev/null
++++ b/src/backends/meta-cursor-sprite-xcursor.h
+@@ -0,0 +1,43 @@
++/*
++ * Copyright 2013, 2018 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#ifndef META_CURSOR_SPRITE_XCURSOR_H
++#define META_CURSOR_SPRITE_XCURSOR_H
++
++#include <glib-object.h>
++#include <X11/Xcursor/Xcursor.h>
++
++#include "backends/meta-cursor.h"
++
++#define META_TYPE_CURSOR_SPRITE_XCURSOR meta_cursor_sprite_xcursor_get_type ()
++G_DECLARE_FINAL_TYPE (MetaCursorSpriteXcursor, meta_cursor_sprite_xcursor,
++                      META, CURSOR_SPRITE_XCURSOR, MetaCursorSprite)
++
++MetaCursorSpriteXcursor * meta_cursor_sprite_xcursor_new (MetaCursor cursor);
++
++void meta_cursor_sprite_xcursor_set_theme_scale (MetaCursorSpriteXcursor *sprite_xcursor,
++                                                 int                      scale);
++
++MetaCursor meta_cursor_sprite_xcursor_get_cursor (MetaCursorSpriteXcursor *sprite_xcusror);
++
++XcursorImage * meta_cursor_sprite_xcursor_get_current_image (MetaCursorSpriteXcursor *sprite_xcursor);
++
++Cursor meta_create_x_cursor (Display    *xdisplay,
++                             MetaCursor  cursor);
++
++#endif /* META_CURSOR_SPRITE_XCURSOR_H */
+diff --git a/src/backends/meta-cursor-tracker-private.h b/src/backends/meta-cursor-tracker-private.h
+index 2ec946847..6f4f84b83 100644
+--- a/src/backends/meta-cursor-tracker-private.h
++++ b/src/backends/meta-cursor-tracker-private.h
+@@ -26,6 +26,7 @@
+ 
+ #include "meta-cursor.h"
+ #include "meta-cursor-renderer.h"
++#include "backends/x11/cm/meta-cursor-sprite-xfixes.h"
+ 
+ struct _MetaCursorTracker {
+   GObject parent_instance;
+@@ -46,7 +47,7 @@ struct _MetaCursorTracker {
+   MetaCursorSprite *root_cursor;
+ 
+   /* The cursor from the X11 server. */
+-  MetaCursorSprite *xfixes_cursor;
++  MetaCursorSpriteXfixes *xfixes_cursor;
+ };
+ 
+ struct _MetaCursorTrackerClass {
+diff --git a/src/backends/meta-cursor-tracker.c b/src/backends/meta-cursor-tracker.c
+index 74fa4351d..6244f11ee 100644
+--- a/src/backends/meta-cursor-tracker.c
++++ b/src/backends/meta-cursor-tracker.c
+@@ -40,9 +40,9 @@
+ 
+ #include <gdk/gdk.h>
+ #include <gdk/gdkx.h>
+-#include <X11/extensions/Xfixes.h>
+ 
+ #include "meta-backend-private.h"
++#include "backends/x11/cm/meta-cursor-sprite-xfixes.h"
+ 
+ G_DEFINE_TYPE (MetaCursorTracker, meta_cursor_tracker, G_TYPE_OBJECT);
+ 
+@@ -218,75 +218,14 @@ static void
+ ensure_xfixes_cursor (MetaCursorTracker *tracker)
+ {
+   MetaDisplay *display = meta_get_display ();
+-  XFixesCursorImage *cursor_image;
+-  CoglTexture2D *sprite;
+-  guint8 *cursor_data;
+-  gboolean free_cursor_data;
+-  CoglContext *ctx;
+-  CoglError *error = NULL;
++  g_autoptr (GError) error = NULL;
+ 
+   if (tracker->xfixes_cursor)
+     return;
+ 
+-  cursor_image = XFixesGetCursorImage (display->xdisplay);
+-  if (!cursor_image)
+-    return;
+-
+-  /* Like all X APIs, XFixesGetCursorImage() returns arrays of 32-bit
+-   * quantities as arrays of long; we need to convert on 64 bit */
+-  if (sizeof(long) == 4)
+-    {
+-      cursor_data = (guint8 *)cursor_image->pixels;
+-      free_cursor_data = FALSE;
+-    }
+-  else
+-    {
+-      int i, j;
+-      guint32 *cursor_words;
+-      gulong *p;
+-      guint32 *q;
+-
+-      cursor_words = g_new (guint32, cursor_image->width * cursor_image->height);
+-      cursor_data = (guint8 *)cursor_words;
+-
+-      p = cursor_image->pixels;
+-      q = cursor_words;
+-      for (j = 0; j < cursor_image->height; j++)
+-        for (i = 0; i < cursor_image->width; i++)
+-          *(q++) = *(p++);
+-
+-      free_cursor_data = TRUE;
+-    }
+-
+-  ctx = clutter_backend_get_cogl_context (clutter_get_default_backend ());
+-  sprite = cogl_texture_2d_new_from_data (ctx,
+-                                          cursor_image->width,
+-                                          cursor_image->height,
+-                                          CLUTTER_CAIRO_FORMAT_ARGB32,
+-                                          cursor_image->width * 4, /* stride */
+-                                          cursor_data,
+-                                          &error);
+-
+-  if (free_cursor_data)
+-    g_free (cursor_data);
+-
+-  if (error != NULL)
+-    {
+-      meta_warning ("Failed to allocate cursor sprite texture: %s\n", error->message);
+-      cogl_error_free (error);
+-    }
+-
+-  if (sprite != NULL)
+-    {
+-      MetaCursorSprite *cursor_sprite = meta_cursor_sprite_new ();
+-      meta_cursor_sprite_set_texture (cursor_sprite,
+-                                      COGL_TEXTURE (sprite),
+-                                      cursor_image->xhot,
+-                                      cursor_image->yhot);
+-      cogl_object_unref (sprite);
+-      tracker->xfixes_cursor = cursor_sprite;
+-    }
+-  XFree (cursor_image);
++  tracker->xfixes_cursor = meta_cursor_sprite_xfixes_new (display, &error);
++  if (!tracker->xfixes_cursor)
++    g_warning ("Failed to create XFIXES cursor: %s", error->message);
+ }
+ 
+ /**
+@@ -308,7 +247,7 @@ meta_cursor_tracker_get_sprite (MetaCursorTracker *tracker)
+   else
+     {
+       ensure_xfixes_cursor (tracker);
+-      cursor_sprite = tracker->xfixes_cursor;
++      cursor_sprite = META_CURSOR_SPRITE (tracker->xfixes_cursor);
+     }
+ 
+   if (cursor_sprite)
+@@ -345,7 +284,7 @@ meta_cursor_tracker_get_hot (MetaCursorTracker *tracker,
+   else
+     {
+       ensure_xfixes_cursor (tracker);
+-      cursor_sprite = tracker->xfixes_cursor;
++      cursor_sprite = META_CURSOR_SPRITE (tracker->xfixes_cursor);
+     }
+ 
+   if (cursor_sprite)
+diff --git a/src/backends/meta-cursor.c b/src/backends/meta-cursor.c
+index beeee765b..9750dc00b 100644
+--- a/src/backends/meta-cursor.c
++++ b/src/backends/meta-cursor.c
+@@ -23,19 +23,12 @@
+ 
+ #include "meta-cursor.h"
+ 
+-#include <meta/errors.h>
++#include "backends/meta-backend-private.h"
++#include "cogl/cogl.h"
++#include "meta/common.h"
+ 
+-#include "display-private.h"
+-#include "screen-private.h"
+-#include "meta-backend-private.h"
+-
+-#include <string.h>
+-
+-#include <X11/cursorfont.h>
+-#include <X11/extensions/Xfixes.h>
+-#include <X11/Xcursor/Xcursor.h>
+-
+-enum {
++enum
++{
+   PREPARE_AT,
+   TEXTURE_CHANGED,
+ 
+@@ -44,316 +37,148 @@ enum {
+ 
+ static guint signals[LAST_SIGNAL];
+ 
+-struct _MetaCursorSprite
++typedef struct _MetaCursorSpritePrivate
+ {
+   GObject parent;
+ 
+-  MetaCursor cursor;
+-
+   CoglTexture2D *texture;
+   float texture_scale;
+   int hot_x, hot_y;
++} MetaCursorSpritePrivate;
+ 
+-  int current_frame;
+-  XcursorImages *xcursor_images;
+-
+-  int theme_scale;
+-  gboolean theme_dirty;
+-};
+-
+-G_DEFINE_TYPE (MetaCursorSprite, meta_cursor_sprite, G_TYPE_OBJECT)
++G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (MetaCursorSprite,
++                                     meta_cursor_sprite,
++                                     G_TYPE_OBJECT)
+ 
+-static const char *
+-translate_meta_cursor (MetaCursor cursor)
+-{
+-  switch (cursor)
+-    {
+-    case META_CURSOR_DEFAULT:
+-      return "left_ptr";
+-    case META_CURSOR_NORTH_RESIZE:
+-      return "top_side";
+-    case META_CURSOR_SOUTH_RESIZE:
+-      return "bottom_side";
+-    case META_CURSOR_WEST_RESIZE:
+-      return "left_side";
+-    case META_CURSOR_EAST_RESIZE:
+-      return "right_side";
+-    case META_CURSOR_SE_RESIZE:
+-      return "bottom_right_corner";
+-    case META_CURSOR_SW_RESIZE:
+-      return "bottom_left_corner";
+-    case META_CURSOR_NE_RESIZE:
+-      return "top_right_corner";
+-    case META_CURSOR_NW_RESIZE:
+-      return "top_left_corner";
+-    case META_CURSOR_MOVE_OR_RESIZE_WINDOW:
+-      return "fleur";
+-    case META_CURSOR_BUSY:
+-      return "watch";
+-    case META_CURSOR_DND_IN_DRAG:
+-      return "dnd-none";
+-    case META_CURSOR_DND_MOVE:
+-      return "dnd-move";
+-    case META_CURSOR_DND_COPY:
+-      return "dnd-copy";
+-    case META_CURSOR_DND_UNSUPPORTED_TARGET:
+-      return "dnd-none";
+-    case META_CURSOR_POINTING_HAND:
+-      return "hand2";
+-    case META_CURSOR_CROSSHAIR:
+-      return "crosshair";
+-    case META_CURSOR_IBEAM:
+-      return "xterm";
+-    default:
+-      break;
+-    }
+-
+-  g_assert_not_reached ();
+-}
+-
+-Cursor
+-meta_cursor_create_x_cursor (Display    *xdisplay,
+-                             MetaCursor  cursor)
+-{
+-  return XcursorLibraryLoadCursor (xdisplay, translate_meta_cursor (cursor));
+-}
+-
+-static XcursorImages *
+-load_cursor_on_client (MetaCursor cursor, int scale)
+-{
+-  return XcursorLibraryLoadImages (translate_meta_cursor (cursor),
+-                                   meta_prefs_get_cursor_theme (),
+-                                   meta_prefs_get_cursor_size () * scale);
+-}
+-
+-static void
+-meta_cursor_sprite_load_from_xcursor_image (MetaCursorSprite *self,
+-                                            XcursorImage     *xc_image)
++gboolean
++meta_cursor_sprite_is_animated (MetaCursorSprite *sprite)
+ {
+-  MetaBackend *meta_backend = meta_get_backend ();
+-  MetaCursorRenderer *renderer = meta_backend_get_cursor_renderer (meta_backend);
+-  uint width, height, rowstride;
+-  CoglPixelFormat cogl_format;
+-  ClutterBackend *clutter_backend;
+-  CoglContext *cogl_context;
+-  CoglTexture2D *texture;
+-  CoglError *error = NULL;
+-
+-  g_assert (self->texture == NULL);
+-
+-  width           = xc_image->width;
+-  height          = xc_image->height;
+-  rowstride       = width * 4;
+-
+-#if G_BYTE_ORDER == G_LITTLE_ENDIAN
+-  cogl_format = COGL_PIXEL_FORMAT_BGRA_8888;
+-#else
+-  cogl_format = COGL_PIXEL_FORMAT_ARGB_8888;
+-#endif
+-
+-  clutter_backend = clutter_get_default_backend ();
+-  cogl_context = clutter_backend_get_cogl_context (clutter_backend);
+-  texture = cogl_texture_2d_new_from_data (cogl_context,
+-                                           width, height,
+-                                           cogl_format,
+-                                           rowstride,
+-                                           (uint8_t *) xc_image->pixels,
+-                                           &error);
+-
+-  if (error)
+-    {
+-      meta_warning ("Failed to allocate cursor texture: %s\n", error->message);
+-      cogl_error_free (error);
+-    }
+-
+-  meta_cursor_sprite_set_texture (self, COGL_TEXTURE (texture),
+-                                  xc_image->xhot, xc_image->yhot);
++  MetaCursorSpriteClass *klass = META_CURSOR_SPRITE_GET_CLASS (sprite);
+ 
+-  if (texture)
+-    cogl_object_unref (texture);
+-
+-  meta_cursor_renderer_realize_cursor_from_xcursor (renderer, self, xc_image);
+-}
+-
+-static XcursorImage *
+-meta_cursor_sprite_get_current_frame_image (MetaCursorSprite *self)
+-{
+-  return self->xcursor_images->images[self->current_frame];
++  if (klass->is_animated)
++    return klass->is_animated (sprite);
++  else
++    return FALSE;
+ }
+ 
+ void
+-meta_cursor_sprite_tick_frame (MetaCursorSprite *self)
+-{
+-  XcursorImage *image;
+-
+-  if (!meta_cursor_sprite_is_animated (self))
+-    return;
+-
+-  self->current_frame++;
+-
+-  if (self->current_frame >= self->xcursor_images->nimage)
+-    self->current_frame = 0;
+-
+-  image = meta_cursor_sprite_get_current_frame_image (self);
+-
+-  g_clear_pointer (&self->texture, cogl_object_unref);
+-  meta_cursor_sprite_load_from_xcursor_image (self, image);
+-}
+-
+-guint
+-meta_cursor_sprite_get_current_frame_time (MetaCursorSprite *self)
+-{
+-  if (!meta_cursor_sprite_is_animated (self))
+-    return 0;
+-
+-  return self->xcursor_images->images[self->current_frame]->delay;
+-}
+-
+-gboolean
+-meta_cursor_sprite_is_animated (MetaCursorSprite *self)
++meta_cursor_sprite_tick_frame (MetaCursorSprite *sprite)
+ {
+-  return (self->xcursor_images &&
+-          self->xcursor_images->nimage > 1);
++  return META_CURSOR_SPRITE_GET_CLASS (sprite)->tick_frame (sprite);
+ }
+ 
+-MetaCursorSprite *
+-meta_cursor_sprite_new (void)
++unsigned int
++meta_cursor_sprite_get_current_frame_time (MetaCursorSprite *sprite)
+ {
+-  return g_object_new (META_TYPE_CURSOR_SPRITE, NULL);
++  return META_CURSOR_SPRITE_GET_CLASS (sprite)->get_current_frame_time (sprite);
+ }
+ 
+-static void
+-meta_cursor_sprite_load_from_theme (MetaCursorSprite *self)
+-{
+-  XcursorImage *image;
+-
+-  g_assert (self->cursor != META_CURSOR_NONE);
+-
+-  self->theme_dirty = FALSE;
+-
+-  /* We might be reloading with a different scale. If so clear the old data. */
+-  if (self->xcursor_images)
+-    {
+-      g_clear_pointer (&self->texture, cogl_object_unref);
+-      XcursorImagesDestroy (self->xcursor_images);
+-    }
+-
+-  self->current_frame = 0;
+-  self->xcursor_images = load_cursor_on_client (self->cursor,
+-                                                self->theme_scale);
+-  if (!self->xcursor_images)
+-    meta_fatal ("Could not find cursor. Perhaps set XCURSOR_PATH?");
+-
+-  image = meta_cursor_sprite_get_current_frame_image (self);
+-  meta_cursor_sprite_load_from_xcursor_image (self, image);
+-}
+-
+-MetaCursorSprite *
+-meta_cursor_sprite_from_theme (MetaCursor cursor)
++void
++meta_cursor_sprite_clear_texture (MetaCursorSprite *sprite)
+ {
+-  MetaCursorSprite *self;
+-
+-  self = meta_cursor_sprite_new ();
+-
+-  self->cursor = cursor;
+-  self->theme_dirty = TRUE;
++  MetaCursorSpritePrivate *priv =
++    meta_cursor_sprite_get_instance_private (sprite);
+ 
+-  return self;
++  g_clear_pointer (&priv->texture, cogl_object_unref);
+ }
+ 
+ void
+-meta_cursor_sprite_set_texture (MetaCursorSprite *self,
++meta_cursor_sprite_set_texture (MetaCursorSprite *sprite,
+                                 CoglTexture      *texture,
+                                 int               hot_x,
+                                 int               hot_y)
+ {
+-  if (self->texture == COGL_TEXTURE_2D (texture) &&
+-      self->hot_x == hot_x &&
+-      self->hot_y == hot_y)
++  MetaCursorSpritePrivate *priv =
++    meta_cursor_sprite_get_instance_private (sprite);
++
++  if (priv->texture == COGL_TEXTURE_2D (texture) &&
++      priv->hot_x == hot_x &&
++      priv->hot_y == hot_y)
+     return;
+ 
+-  g_clear_pointer (&self->texture, cogl_object_unref);
++  g_clear_pointer (&priv->texture, cogl_object_unref);
+   if (texture)
+-    self->texture = cogl_object_ref (texture);
+-  self->hot_x = hot_x;
+-  self->hot_y = hot_y;
++    priv->texture = cogl_object_ref (texture);
++  priv->hot_x = hot_x;
++  priv->hot_y = hot_y;
+ 
+-  g_signal_emit (self, signals[TEXTURE_CHANGED], 0);
++  g_signal_emit (sprite, signals[TEXTURE_CHANGED], 0);
+ }
+ 
+ void
+-meta_cursor_sprite_set_texture_scale (MetaCursorSprite *self,
++meta_cursor_sprite_set_texture_scale (MetaCursorSprite *sprite,
+                                       float             scale)
+ {
+-  self->texture_scale = scale;
+-}
++  MetaCursorSpritePrivate *priv =
++    meta_cursor_sprite_get_instance_private (sprite);
+ 
+-void
+-meta_cursor_sprite_set_theme_scale (MetaCursorSprite *self,
+-                                    int               theme_scale)
+-{
+-  if (self->theme_scale != theme_scale)
+-    self->theme_dirty = TRUE;
+-  self->theme_scale = theme_scale;
++  priv->texture_scale = scale;
+ }
+ 
+ CoglTexture *
+-meta_cursor_sprite_get_cogl_texture (MetaCursorSprite *self)
++meta_cursor_sprite_get_cogl_texture (MetaCursorSprite *sprite)
+ {
+-  return COGL_TEXTURE (self->texture);
+-}
++  MetaCursorSpritePrivate *priv =
++    meta_cursor_sprite_get_instance_private (sprite);
+ 
+-MetaCursor
+-meta_cursor_sprite_get_meta_cursor (MetaCursorSprite *self)
+-{
+-  return self->cursor;
++  return COGL_TEXTURE (priv->texture);
+ }
+ 
+ void
+-meta_cursor_sprite_get_hotspot (MetaCursorSprite *self,
++meta_cursor_sprite_get_hotspot (MetaCursorSprite *sprite,
+                                 int              *hot_x,
+                                 int              *hot_y)
+ {
+-  *hot_x = self->hot_x;
+-  *hot_y = self->hot_y;
++  MetaCursorSpritePrivate *priv =
++    meta_cursor_sprite_get_instance_private (sprite);
++
++  *hot_x = priv->hot_x;
++  *hot_y = priv->hot_y;
+ }
+ 
+ float
+-meta_cursor_sprite_get_texture_scale (MetaCursorSprite *self)
++meta_cursor_sprite_get_texture_scale (MetaCursorSprite *sprite)
+ {
+-  return self->texture_scale;
++  MetaCursorSpritePrivate *priv =
++    meta_cursor_sprite_get_instance_private (sprite);
++
++  return priv->texture_scale;
+ }
+ 
+ void
+-meta_cursor_sprite_prepare_at (MetaCursorSprite *self,
++meta_cursor_sprite_prepare_at (MetaCursorSprite *sprite,
+                                int               x,
+                                int               y)
+ {
+-  g_signal_emit (self, signals[PREPARE_AT], 0, x, y);
++  g_signal_emit (sprite, signals[PREPARE_AT], 0, x, y);
+ }
+ 
+ void
+-meta_cursor_sprite_realize_texture (MetaCursorSprite *self)
++meta_cursor_sprite_realize_texture (MetaCursorSprite *sprite)
+ {
+-  if (self->theme_dirty)
+-    meta_cursor_sprite_load_from_theme (self);
++  MetaCursorSpriteClass *klass = META_CURSOR_SPRITE_GET_CLASS (sprite);
++
++  if (klass->realize_texture)
++    klass->realize_texture (sprite);
+ }
+ 
+ static void
+-meta_cursor_sprite_init (MetaCursorSprite *self)
++meta_cursor_sprite_init (MetaCursorSprite *sprite)
+ {
+-  self->texture_scale = 1.0f;
++  MetaCursorSpritePrivate *priv =
++    meta_cursor_sprite_get_instance_private (sprite);
++
++  priv->texture_scale = 1.0f;
+ }
+ 
+ static void
+ meta_cursor_sprite_finalize (GObject *object)
+ {
+-  MetaCursorSprite *self = META_CURSOR_SPRITE (object);
+-
+-  if (self->xcursor_images)
+-    XcursorImagesDestroy (self->xcursor_images);
++  MetaCursorSprite *sprite = META_CURSOR_SPRITE (object);
++  MetaCursorSpritePrivate *priv =
++    meta_cursor_sprite_get_instance_private (sprite);
+ 
+-  g_clear_pointer (&self->texture, cogl_object_unref);
++  g_clear_pointer (&priv->texture, cogl_object_unref);
+ 
+   G_OBJECT_CLASS (meta_cursor_sprite_parent_class)->finalize (object);
+ }
+diff --git a/src/backends/meta-cursor.h b/src/backends/meta-cursor.h
+index 6087df69c..3051fdee6 100644
+--- a/src/backends/meta-cursor.h
++++ b/src/backends/meta-cursor.h
+@@ -25,51 +25,50 @@
+ #include <meta/common.h>
+ #include <meta/boxes.h>
+ 
+-typedef struct _MetaCursorSprite MetaCursorSprite;
+-
+ #define META_TYPE_CURSOR_SPRITE (meta_cursor_sprite_get_type ())
+-G_DECLARE_FINAL_TYPE (MetaCursorSprite,
+-                      meta_cursor_sprite,
+-                      META, CURSOR_SPRITE,
+-                      GObject);
+-
+-MetaCursorSprite * meta_cursor_sprite_new (void);
+-
+-MetaCursorSprite * meta_cursor_sprite_from_theme  (MetaCursor cursor);
+-
+-
+-void meta_cursor_sprite_set_theme_scale (MetaCursorSprite *self,
+-                                         int               scale);
+-
+-MetaCursor meta_cursor_sprite_get_meta_cursor (MetaCursorSprite *self);
+-
+-Cursor meta_cursor_create_x_cursor (Display    *xdisplay,
+-                                    MetaCursor  cursor);
+-
+-void meta_cursor_sprite_prepare_at (MetaCursorSprite *self,
++G_DECLARE_DERIVABLE_TYPE (MetaCursorSprite,
++                          meta_cursor_sprite,
++                          META, CURSOR_SPRITE,
++                          GObject)
++
++struct _MetaCursorSpriteClass
++{
++  GObjectClass parent_class;
++
++  void (* realize_texture) (MetaCursorSprite *sprite);
++  gboolean (* is_animated) (MetaCursorSprite *sprite);
++  void (* tick_frame) (MetaCursorSprite *sprite);
++  unsigned int (* get_current_frame_time) (MetaCursorSprite *sprite);
++};
++
++void meta_cursor_sprite_prepare_at (MetaCursorSprite *sprite,
+                                     int               x,
+                                     int               y);
+ 
+-void meta_cursor_sprite_realize_texture (MetaCursorSprite *self);
++void meta_cursor_sprite_realize_texture (MetaCursorSprite *sprite);
++
++void meta_cursor_sprite_clear_texture (MetaCursorSprite *sprite);
+ 
+-void meta_cursor_sprite_set_texture (MetaCursorSprite *self,
++void meta_cursor_sprite_set_texture (MetaCursorSprite *sprite,
+                                      CoglTexture      *texture,
+                                      int               hot_x,
+                                      int               hot_y);
+ 
+-void meta_cursor_sprite_set_texture_scale (MetaCursorSprite *self,
++void meta_cursor_sprite_set_texture_scale (MetaCursorSprite *sprite,
+                                            float             scale);
+ 
+-CoglTexture *meta_cursor_sprite_get_cogl_texture (MetaCursorSprite *self);
++CoglTexture *meta_cursor_sprite_get_cogl_texture (MetaCursorSprite *sprite);
+ 
+-void meta_cursor_sprite_get_hotspot (MetaCursorSprite *self,
++void meta_cursor_sprite_get_hotspot (MetaCursorSprite *sprite,
+                                      int              *hot_x,
+                                      int              *hot_y);
+ 
+-float meta_cursor_sprite_get_texture_scale (MetaCursorSprite *self);
++float meta_cursor_sprite_get_texture_scale (MetaCursorSprite *sprite);
++
++gboolean meta_cursor_sprite_is_animated (MetaCursorSprite *sprite);
++
++void meta_cursor_sprite_tick_frame (MetaCursorSprite *sprite);
+ 
+-gboolean meta_cursor_sprite_is_animated            (MetaCursorSprite *self);
+-void     meta_cursor_sprite_tick_frame             (MetaCursorSprite *self);
+-guint    meta_cursor_sprite_get_current_frame_time (MetaCursorSprite *self);
++unsigned int meta_cursor_sprite_get_current_frame_time (MetaCursorSprite *sprite);
+ 
+ #endif /* META_CURSOR_H */
+diff --git a/src/backends/native/meta-backend-native.c b/src/backends/native/meta-backend-native.c
+index a29f593ea..042d96ec6 100644
+--- a/src/backends/native/meta-backend-native.c
++++ b/src/backends/native/meta-backend-native.c
+@@ -645,8 +645,6 @@ void meta_backend_native_resume (MetaBackendNative *native)
+     meta_backend_get_monitor_manager (backend);
+   MetaMonitorManagerKms *monitor_manager_kms =
+     META_MONITOR_MANAGER_KMS (monitor_manager);
+-  MetaCursorRenderer *cursor_renderer;
+-  MetaCursorRendererNative *cursor_renderer_native;
+   ClutterActor *stage;
+   MetaIdleMonitor *idle_monitor;
+ 
+@@ -658,10 +656,6 @@ void meta_backend_native_resume (MetaBackendNative *native)
+   stage = meta_backend_get_stage (backend);
+   clutter_actor_queue_redraw (stage);
+ 
+-  cursor_renderer = meta_backend_get_cursor_renderer (backend);
+-  cursor_renderer_native = META_CURSOR_RENDERER_NATIVE (cursor_renderer);
+-  meta_cursor_renderer_native_force_update (cursor_renderer_native);
+-
+   idle_monitor = meta_backend_get_idle_monitor (backend, 0);
+   meta_idle_monitor_reset_idletime (idle_monitor);
+ }
+diff --git a/src/backends/native/meta-cursor-renderer-native.c b/src/backends/native/meta-cursor-renderer-native.c
+index c7326af42..29800953b 100644
+--- a/src/backends/native/meta-cursor-renderer-native.c
++++ b/src/backends/native/meta-cursor-renderer-native.c
+@@ -35,6 +35,7 @@
+ #include <meta/meta-backend.h>
+ 
+ #include "backends/meta-backend-private.h"
++#include "backends/meta-cursor-sprite-xcursor.h"
+ #include "backends/meta-logical-monitor.h"
+ #include "backends/meta-monitor.h"
+ #include "backends/meta-monitor-manager-private.h"
+@@ -43,6 +44,11 @@
+ #include "core/boxes-private.h"
+ #include "meta/boxes.h"
+ 
++#ifdef HAVE_WAYLAND
++#include "wayland/meta-cursor-sprite-wayland.h"
++#include "wayland/meta-wayland-buffer.h"
++#endif
++
+ #ifndef DRM_CAP_CURSOR_WIDTH
+ #define DRM_CAP_CURSOR_WIDTH 0x8
+ #endif
+@@ -113,6 +119,11 @@ static GQuark quark_cursor_renderer_native_gpu_data = 0;
+ 
+ G_DEFINE_TYPE_WITH_PRIVATE (MetaCursorRendererNative, meta_cursor_renderer_native, META_TYPE_CURSOR_RENDERER);
+ 
++static void
++realize_cursor_sprite (MetaCursorRenderer *renderer,
++                       MetaCursorSprite   *cursor_sprite,
++                       GList              *gpus);
++
+ static MetaCursorNativeGpuState *
+ get_cursor_gpu_state (MetaCursorNativePrivate *cursor_priv,
+                       MetaGpuKms              *gpu_kms);
+@@ -152,7 +163,8 @@ static void
+ meta_cursor_renderer_native_finalize (GObject *object)
+ {
+   MetaCursorRendererNative *renderer = META_CURSOR_RENDERER_NATIVE (object);
+-  MetaCursorRendererNativePrivate *priv = meta_cursor_renderer_native_get_instance_private (renderer);
++  MetaCursorRendererNativePrivate *priv =
++    meta_cursor_renderer_native_get_instance_private (renderer);
+ 
+   if (priv->animation_timeout_id)
+     g_source_remove (priv->animation_timeout_id);
+@@ -203,7 +215,8 @@ set_crtc_cursor (MetaCursorRendererNative *native,
+                  MetaCrtc                 *crtc,
+                  MetaCursorSprite         *cursor_sprite)
+ {
+-  MetaCursorRendererNativePrivate *priv = meta_cursor_renderer_native_get_instance_private (native);
++  MetaCursorRendererNativePrivate *priv =
++    meta_cursor_renderer_native_get_instance_private (native);
+   MetaCursorRendererNativeGpuData *cursor_renderer_gpu_data;
+   MetaGpuKms *gpu_kms;
+   int kms_fd;
+@@ -371,7 +384,8 @@ static void
+ update_hw_cursor (MetaCursorRendererNative *native,
+                   MetaCursorSprite         *cursor_sprite)
+ {
+-  MetaCursorRendererNativePrivate *priv = meta_cursor_renderer_native_get_instance_private (native);
++  MetaCursorRendererNativePrivate *priv =
++    meta_cursor_renderer_native_get_instance_private (native);
+   MetaCursorRenderer *renderer = META_CURSOR_RENDERER (native);
+   MetaMonitorManager *monitor_manager = priv->monitor_manager;
+   GList *logical_monitors;
+@@ -564,18 +578,15 @@ can_draw_cursor_unscaled (MetaCursorRenderer *renderer,
+ 
+ static gboolean
+ should_have_hw_cursor (MetaCursorRenderer *renderer,
+-                       MetaCursorSprite   *cursor_sprite)
++                       MetaCursorSprite   *cursor_sprite,
++                       GList              *gpus)
+ {
+-  MetaCursorRendererNative *native = META_CURSOR_RENDERER_NATIVE (renderer);
+-  MetaCursorRendererNativePrivate *priv = meta_cursor_renderer_native_get_instance_private (native);
+-  GList *gpus;
+   GList *l;
+   CoglTexture *texture;
+ 
+   if (!cursor_sprite)
+     return FALSE;
+ 
+-  gpus = meta_monitor_manager_get_gpus (priv->monitor_manager);
+   for (l = gpus; l; l = l->next)
+     {
+       MetaGpuKms *gpu_kms = l->data;
+@@ -609,7 +620,8 @@ should_have_hw_cursor (MetaCursorRenderer *renderer,
+ static gboolean
+ meta_cursor_renderer_native_update_animation (MetaCursorRendererNative *native)
+ {
+-  MetaCursorRendererNativePrivate *priv = meta_cursor_renderer_native_get_instance_private (native);
++  MetaCursorRendererNativePrivate *priv =
++    meta_cursor_renderer_native_get_instance_private (native);
+   MetaCursorRenderer *renderer = META_CURSOR_RENDERER (native);
+   MetaCursorSprite *cursor_sprite = meta_cursor_renderer_get_cursor (renderer);
+ 
+@@ -621,10 +633,11 @@ meta_cursor_renderer_native_update_animation (MetaCursorRendererNative *native)
+ }
+ 
+ static void
+-meta_cursor_renderer_native_trigger_frame (MetaCursorRendererNative *native,
+-                                           MetaCursorSprite         *cursor_sprite)
++maybe_schedule_cursor_sprite_animation_frame (MetaCursorRendererNative *native,
++                                              MetaCursorSprite         *cursor_sprite)
+ {
+-  MetaCursorRendererNativePrivate *priv = meta_cursor_renderer_native_get_instance_private (native);
++  MetaCursorRendererNativePrivate *priv =
++    meta_cursor_renderer_native_get_instance_private (native);
+   gboolean cursor_change;
+   guint delay;
+ 
+@@ -656,21 +669,78 @@ meta_cursor_renderer_native_trigger_frame (MetaCursorRendererNative *native,
+     }
+ }
+ 
++static GList *
++calculate_cursor_sprite_gpus (MetaCursorRenderer *renderer,
++                              MetaCursorSprite   *cursor_sprite)
++{
++  MetaCursorRendererNative *native = META_CURSOR_RENDERER_NATIVE (renderer);
++  MetaCursorRendererNativePrivate *priv =
++    meta_cursor_renderer_native_get_instance_private (native);
++  MetaMonitorManager *monitor_manager = priv->monitor_manager;
++  GList *gpus = NULL;
++  GList *logical_monitors;
++  GList *l;
++  ClutterRect cursor_rect;
++
++  cursor_rect = meta_cursor_renderer_calculate_rect (renderer, cursor_sprite);
++
++  logical_monitors =
++    meta_monitor_manager_get_logical_monitors (monitor_manager);
++  for (l = logical_monitors; l; l = l->next)
++    {
++      MetaLogicalMonitor *logical_monitor = l->data;
++      MetaRectangle logical_monitor_layout;
++      ClutterRect logical_monitor_rect;
++      GList *monitors, *l_mon;
++
++      logical_monitor_layout =
++        meta_logical_monitor_get_layout (logical_monitor);
++      logical_monitor_rect =
++        meta_rectangle_to_clutter_rect (&logical_monitor_layout);
++
++      if (!clutter_rect_intersection (&cursor_rect, &logical_monitor_rect,
++                                      NULL))
++        continue;
++
++      monitors = meta_logical_monitor_get_monitors (logical_monitor);
++      for (l_mon = monitors; l_mon; l_mon = l_mon->next)
++        {
++          MetaMonitor *monitor = l_mon->data;
++          MetaGpu *gpu;
++
++          gpu = meta_monitor_get_gpu (monitor);
++          if (!g_list_find (gpus, gpu))
++            gpus = g_list_prepend (gpus, gpu);
++        }
++    }
++
++  return gpus;
++}
++
+ static gboolean
+ meta_cursor_renderer_native_update_cursor (MetaCursorRenderer *renderer,
+                                            MetaCursorSprite   *cursor_sprite)
+ {
+   MetaCursorRendererNative *native = META_CURSOR_RENDERER_NATIVE (renderer);
+-  MetaCursorRendererNativePrivate *priv = meta_cursor_renderer_native_get_instance_private (native);
++  MetaCursorRendererNativePrivate *priv =
++    meta_cursor_renderer_native_get_instance_private (native);
++  g_autoptr (GList) gpus = NULL;
+ 
+   if (cursor_sprite)
+-    meta_cursor_sprite_realize_texture (cursor_sprite);
++    {
++      meta_cursor_sprite_realize_texture (cursor_sprite);
++      gpus = calculate_cursor_sprite_gpus (renderer, cursor_sprite);
++      realize_cursor_sprite (renderer, cursor_sprite, gpus);
++    }
+ 
+-  meta_cursor_renderer_native_trigger_frame (native, cursor_sprite);
++  maybe_schedule_cursor_sprite_animation_frame (native, cursor_sprite);
+ 
+-  priv->has_hw_cursor = should_have_hw_cursor (renderer, cursor_sprite);
++  priv->has_hw_cursor = should_have_hw_cursor (renderer, cursor_sprite, gpus);
+   update_hw_cursor (native, cursor_sprite);
+-  return priv->has_hw_cursor;
++
++  return (priv->has_hw_cursor ||
++          !cursor_sprite ||
++          !meta_cursor_sprite_get_cogl_texture (cursor_sprite));
+ }
+ 
+ static void
+@@ -706,6 +776,24 @@ ensure_cursor_gpu_state (MetaCursorNativePrivate *cursor_priv,
+   return cursor_gpu_state;
+ }
+ 
++static void
++on_cursor_sprite_texture_changed (MetaCursorSprite *cursor_sprite)
++{
++  MetaCursorNativePrivate *cursor_priv = get_cursor_priv (cursor_sprite);
++  GHashTableIter iter;
++  MetaCursorNativeGpuState *cursor_gpu_state;
++
++  g_hash_table_iter_init (&iter, cursor_priv->gpu_states);
++  while (g_hash_table_iter_next (&iter, NULL, (gpointer *) &cursor_gpu_state))
++    {
++      guint pending_bo;
++      pending_bo = get_pending_cursor_sprite_gbm_bo_index (cursor_gpu_state);
++      g_clear_pointer (&cursor_gpu_state->bos[pending_bo],
++                       (GDestroyNotify) gbm_bo_destroy);
++      cursor_gpu_state->pending_bo_state = META_CURSOR_GBM_BO_STATE_INVALIDATED;
++    }
++}
++
+ static void
+ cursor_priv_free (MetaCursorNativePrivate *cursor_priv)
+ {
+@@ -738,6 +826,9 @@ ensure_cursor_priv (MetaCursorSprite *cursor_sprite)
+                            cursor_priv,
+                            (GDestroyNotify) cursor_priv_free);
+ 
++  g_signal_connect (cursor_sprite, "texture-changed",
++                    G_CALLBACK (on_cursor_sprite_texture_changed), NULL);
++
+   return cursor_priv;
+ }
+ 
+@@ -805,57 +896,71 @@ load_cursor_sprite_gbm_buffer_for_gpu (MetaCursorRendererNative *native,
+     }
+ }
+ 
+-static void
+-invalidate_pending_cursor_sprite_gbm_bo (MetaCursorSprite *cursor_sprite,
+-                                         MetaGpuKms       *gpu_kms)
++static gboolean
++is_cursor_hw_state_valid (MetaCursorSprite *cursor_sprite,
++                          MetaGpuKms       *gpu_kms)
+ {
+   MetaCursorNativePrivate *cursor_priv;
+   MetaCursorNativeGpuState *cursor_gpu_state;
+-  guint pending_bo;
+ 
+   cursor_priv = get_cursor_priv (cursor_sprite);
+   if (!cursor_priv)
+-    return;
++    return FALSE;
+ 
+   cursor_gpu_state = get_cursor_gpu_state (cursor_priv, gpu_kms);
+   if (!cursor_gpu_state)
+-    return;
++    return FALSE;
+ 
+-  pending_bo = get_pending_cursor_sprite_gbm_bo_index (cursor_gpu_state);
+-  g_clear_pointer (&cursor_gpu_state->bos[pending_bo],
+-                   (GDestroyNotify) gbm_bo_destroy);
+-  cursor_gpu_state->pending_bo_state = META_CURSOR_GBM_BO_STATE_INVALIDATED;
++  switch (cursor_gpu_state->pending_bo_state)
++    {
++    case META_CURSOR_GBM_BO_STATE_SET:
++    case META_CURSOR_GBM_BO_STATE_NONE:
++      return TRUE;
++    case META_CURSOR_GBM_BO_STATE_INVALIDATED:
++      return FALSE;
++    }
++
++  g_assert_not_reached ();
+ }
+ 
+ #ifdef HAVE_WAYLAND
+ static void
+-meta_cursor_renderer_native_realize_cursor_from_wl_buffer_for_gpu (MetaCursorRenderer *renderer,
+-                                                                   MetaGpuKms         *gpu_kms,
+-                                                                   MetaCursorSprite   *cursor_sprite,
+-                                                                   struct wl_resource *buffer)
++realize_cursor_sprite_from_wl_buffer_for_gpu (MetaCursorRenderer      *renderer,
++                                              MetaGpuKms              *gpu_kms,
++                                              MetaCursorSpriteWayland *sprite_wayland)
+ {
+   MetaCursorRendererNative *native = META_CURSOR_RENDERER_NATIVE (renderer);
++  MetaCursorSprite *cursor_sprite = META_CURSOR_SPRITE (sprite_wayland);
+   MetaCursorRendererNativeGpuData *cursor_renderer_gpu_data;
+   uint32_t gbm_format;
+   uint64_t cursor_width, cursor_height;
+   CoglTexture *texture;
+   uint width, height;
++  MetaWaylandBuffer *buffer;
++  struct wl_resource *buffer_resource;
++  struct wl_shm_buffer *shm_buffer;
+ 
+   cursor_renderer_gpu_data =
+     meta_cursor_renderer_native_gpu_data_from_gpu (gpu_kms);
+   if (!cursor_renderer_gpu_data || cursor_renderer_gpu_data->hw_cursor_broken)
+     return;
+ 
+-  /* Destroy any previous pending cursor buffer; we'll always either fail (which
+-   * should unset, or succeed, which will set new buffer.
+-   */
+-  invalidate_pending_cursor_sprite_gbm_bo (cursor_sprite, gpu_kms);
++  if (is_cursor_hw_state_valid (cursor_sprite, gpu_kms))
++    return;
+ 
+   texture = meta_cursor_sprite_get_cogl_texture (cursor_sprite);
+   width = cogl_texture_get_width (texture);
+   height = cogl_texture_get_height (texture);
+ 
+-  struct wl_shm_buffer *shm_buffer = wl_shm_buffer_get (buffer);
++  buffer = meta_cursor_sprite_wayland_get_buffer (sprite_wayland);
++  if (!buffer)
++    return;
++
++  buffer_resource = meta_wayland_buffer_get_resource (buffer);
++  if (!buffer_resource)
++    return;
++
++  shm_buffer = wl_shm_buffer_get (buffer_resource);
+   if (shm_buffer)
+     {
+       int rowstride = wl_shm_buffer_get_stride (shm_buffer);
+@@ -929,47 +1034,27 @@ meta_cursor_renderer_native_realize_cursor_from_wl_buffer_for_gpu (MetaCursorRen
+       set_pending_cursor_sprite_gbm_bo (cursor_sprite, gpu_kms, bo);
+     }
+ }
+-
+-static void
+-meta_cursor_renderer_native_realize_cursor_from_wl_buffer (MetaCursorRenderer *renderer,
+-                                                           MetaCursorSprite *cursor_sprite,
+-                                                           struct wl_resource *buffer)
+-{
+-  MetaCursorRendererNative *native = META_CURSOR_RENDERER_NATIVE (renderer);
+-  MetaCursorRendererNativePrivate *priv =
+-	  meta_cursor_renderer_native_get_instance_private (native);
+-  GList *gpus;
+-  GList *l;
+-
+-  gpus = meta_monitor_manager_get_gpus (priv->monitor_manager);
+-  for (l = gpus; l; l = l->next)
+-    {
+-      MetaGpuKms *gpu_kms = l->data;
+-
+-      meta_cursor_renderer_native_realize_cursor_from_wl_buffer_for_gpu (
+-        renderer,
+-        gpu_kms,
+-        cursor_sprite,
+-        buffer);
+-    }
+-}
+ #endif
+ 
+ static void
+-meta_cursor_renderer_native_realize_cursor_from_xcursor_for_gpu (MetaCursorRenderer *renderer,
+-                                                                 MetaGpuKms         *gpu_kms,
+-                                                                 MetaCursorSprite   *cursor_sprite,
+-                                                                 XcursorImage       *xc_image)
++realize_cursor_sprite_from_xcursor_for_gpu (MetaCursorRenderer      *renderer,
++                                            MetaGpuKms              *gpu_kms,
++                                            MetaCursorSpriteXcursor *sprite_xcursor)
+ {
+   MetaCursorRendererNative *native = META_CURSOR_RENDERER_NATIVE (renderer);
+   MetaCursorRendererNativeGpuData *cursor_renderer_gpu_data;
++  MetaCursorSprite *cursor_sprite = META_CURSOR_SPRITE (sprite_xcursor);
++  XcursorImage *xc_image;
+ 
+   cursor_renderer_gpu_data =
+     meta_cursor_renderer_native_gpu_data_from_gpu (gpu_kms);
+   if (!cursor_renderer_gpu_data || cursor_renderer_gpu_data->hw_cursor_broken)
+     return;
+ 
+-  invalidate_pending_cursor_sprite_gbm_bo (cursor_sprite, gpu_kms);
++  if (is_cursor_hw_state_valid (cursor_sprite, gpu_kms))
++    return;
++
++  xc_image = meta_cursor_sprite_xcursor_get_current_image (sprite_xcursor);
+ 
+   load_cursor_sprite_gbm_buffer_for_gpu (native,
+                                          gpu_kms,
+@@ -982,26 +1067,45 @@ meta_cursor_renderer_native_realize_cursor_from_xcursor_for_gpu (MetaCursorRende
+ }
+ 
+ static void
+-meta_cursor_renderer_native_realize_cursor_from_xcursor (MetaCursorRenderer *renderer,
+-                                                         MetaCursorSprite   *cursor_sprite,
+-                                                         XcursorImage       *xc_image)
++realize_cursor_sprite_for_gpu (MetaCursorRenderer *renderer,
++                               MetaGpuKms         *gpu_kms,
++                               MetaCursorSprite   *cursor_sprite)
++{
++#ifdef HAVE_WAYLAND
++  if (META_IS_CURSOR_SPRITE_WAYLAND (cursor_sprite))
++    {
++      MetaCursorSpriteWayland *sprite_wayland =
++        META_CURSOR_SPRITE_WAYLAND (cursor_sprite);
++
++      realize_cursor_sprite_from_wl_buffer_for_gpu (renderer,
++                                                    gpu_kms,
++                                                    sprite_wayland);
++    }
++  else
++#endif
++  if (META_IS_CURSOR_SPRITE_XCURSOR (cursor_sprite))
++    {
++      MetaCursorSpriteXcursor *sprite_xcursor =
++        META_CURSOR_SPRITE_XCURSOR (cursor_sprite);
++
++      realize_cursor_sprite_from_xcursor_for_gpu (renderer,
++                                                  gpu_kms,
++                                                  sprite_xcursor);
++    }
++}
++
++static void
++realize_cursor_sprite (MetaCursorRenderer *renderer,
++                       MetaCursorSprite   *cursor_sprite,
++                       GList              *gpus)
+ {
+-  MetaCursorRendererNative *native = META_CURSOR_RENDERER_NATIVE (renderer);
+-  MetaCursorRendererNativePrivate *priv =
+-	  meta_cursor_renderer_native_get_instance_private (native);
+-  GList *gpus;
+   GList *l;
+ 
+-  gpus = meta_monitor_manager_get_gpus (priv->monitor_manager);
+   for (l = gpus; l; l = l->next)
+     {
+       MetaGpuKms *gpu_kms = l->data;
+ 
+-      meta_cursor_renderer_native_realize_cursor_from_xcursor_for_gpu (
+-        renderer,
+-        gpu_kms,
+-        cursor_sprite,
+-        xc_image);
++      realize_cursor_sprite_for_gpu (renderer, gpu_kms, cursor_sprite);
+     }
+ }
+ 
+@@ -1013,12 +1117,6 @@ meta_cursor_renderer_native_class_init (MetaCursorRendererNativeClass *klass)
+ 
+   object_class->finalize = meta_cursor_renderer_native_finalize;
+   renderer_class->update_cursor = meta_cursor_renderer_native_update_cursor;
+-#ifdef HAVE_WAYLAND
+-  renderer_class->realize_cursor_from_wl_buffer =
+-    meta_cursor_renderer_native_realize_cursor_from_wl_buffer;
+-#endif
+-  renderer_class->realize_cursor_from_xcursor =
+-    meta_cursor_renderer_native_realize_cursor_from_xcursor;
+ 
+   quark_cursor_sprite = g_quark_from_static_string ("-meta-cursor-native");
+   quark_cursor_renderer_native_gpu_data =
+@@ -1033,14 +1131,13 @@ force_update_hw_cursor (MetaCursorRendererNative *native)
+     meta_cursor_renderer_native_get_instance_private (native);
+ 
+   priv->hw_state_invalidated = TRUE;
+-  update_hw_cursor (native, meta_cursor_renderer_get_cursor (renderer));
++  meta_cursor_renderer_force_update (renderer);
+ }
+ 
+ static void
+ on_monitors_changed (MetaMonitorManager       *monitors,
+                      MetaCursorRendererNative *native)
+ {
+-  /* Our tracking is all messed up, so force an update. */
+   force_update_hw_cursor (native);
+ }
+ 
+@@ -1112,9 +1209,3 @@ static void
+ meta_cursor_renderer_native_init (MetaCursorRendererNative *native)
+ {
+ }
+-
+-void
+-meta_cursor_renderer_native_force_update (MetaCursorRendererNative *native)
+-{
+-  force_update_hw_cursor (native);
+-}
+diff --git a/src/backends/native/meta-cursor-renderer-native.h b/src/backends/native/meta-cursor-renderer-native.h
+index 09203a5f7..fb4c8edc7 100644
+--- a/src/backends/native/meta-cursor-renderer-native.h
++++ b/src/backends/native/meta-cursor-renderer-native.h
+@@ -32,8 +32,6 @@ G_DECLARE_FINAL_TYPE (MetaCursorRendererNative, meta_cursor_renderer_native,
+                       META, CURSOR_RENDERER_NATIVE,
+                       MetaCursorRenderer)
+ 
+-void meta_cursor_renderer_native_force_update (MetaCursorRendererNative *renderer);
+-
+ MetaCursorRendererNative * meta_cursor_renderer_native_new (MetaBackend *backend);
+ 
+ #endif /* META_CURSOR_RENDERER_NATIVE_H */
+diff --git a/src/backends/x11/cm/meta-cursor-sprite-xfixes.c b/src/backends/x11/cm/meta-cursor-sprite-xfixes.c
+new file mode 100644
+index 000000000..143ebb791
+--- /dev/null
++++ b/src/backends/x11/cm/meta-cursor-sprite-xfixes.c
+@@ -0,0 +1,226 @@
++/*
++ * Copyright 2013, 2018 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include "config.h"
++
++#include "backends/x11/cm/meta-cursor-sprite-xfixes.h"
++
++#include <X11/extensions/Xfixes.h>
++
++#include "core/display-private.h"
++
++enum
++{
++  PROP_0,
++
++  PROP_DISPLAY,
++
++  N_PROPS
++};
++
++static GParamSpec *obj_props[N_PROPS];
++
++struct _MetaCursorSpriteXfixes
++{
++  MetaCursorSprite parent;
++
++  MetaDisplay *display;
++};
++
++static void
++meta_screen_cast_xfixes_init_initable_iface (GInitableIface *iface);
++
++G_DEFINE_TYPE_WITH_CODE (MetaCursorSpriteXfixes,
++                         meta_cursor_sprite_xfixes,
++                         META_TYPE_CURSOR_SPRITE,
++                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                                                meta_screen_cast_xfixes_init_initable_iface))
++
++static void
++meta_cursor_sprite_xfixes_realize_texture (MetaCursorSprite *sprite)
++{
++}
++
++static gboolean
++meta_cursor_sprite_xfixes_is_animated (MetaCursorSprite *sprite)
++{
++  return FALSE;
++}
++
++static void
++meta_cursor_sprite_xfixes_get_property (GObject    *object,
++                                        guint       prop_id,
++                                        GValue     *value,
++                                        GParamSpec *pspec)
++{
++  MetaCursorSpriteXfixes *sprite_xfixes = META_CURSOR_SPRITE_XFIXES (object);
++
++  switch (prop_id)
++    {
++    case PROP_DISPLAY:
++      g_value_set_object (value, sprite_xfixes->display);
++      break;
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++      break;
++    }
++}
++
++static void
++meta_cursor_sprite_xfixes_set_property (GObject      *object,
++                                        guint         prop_id,
++                                        const GValue *value,
++                                        GParamSpec   *pspec)
++{
++  MetaCursorSpriteXfixes *sprite_xfixes = META_CURSOR_SPRITE_XFIXES (object);
++
++  switch (prop_id)
++    {
++    case PROP_DISPLAY:
++      sprite_xfixes->display = g_value_get_object (value);
++      break;
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++      break;
++    }
++}
++
++MetaCursorSpriteXfixes *
++meta_cursor_sprite_xfixes_new (MetaDisplay  *display,
++                               GError      **error)
++{
++  return g_initable_new (META_TYPE_CURSOR_SPRITE_XFIXES,
++                         NULL, error,
++                         "display", display,
++                         NULL);
++}
++
++static gboolean
++meta_cursor_sprite_xfixes_initable_init (GInitable     *initable,
++                                         GCancellable  *cancellable,
++                                         GError       **error)
++{
++  MetaCursorSpriteXfixes *sprite_xfixes =
++    META_CURSOR_SPRITE_XFIXES (initable);
++  MetaCursorSprite *sprite = META_CURSOR_SPRITE (sprite_xfixes);
++  XFixesCursorImage *cursor_image;
++  CoglTexture2D *texture;
++  uint8_t *cursor_data;
++  gboolean free_cursor_data;
++  ClutterBackend *clutter_backend;
++  CoglContext *cogl_context;
++
++  cursor_image = XFixesGetCursorImage (sprite_xfixes->display->xdisplay);
++  if (!cursor_image)
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Failed to get cursor image");
++      return FALSE;
++    }
++
++  /*
++   * Like all X APIs, XFixesGetCursorImage() returns arrays of 32-bit
++   * quantities as arrays of long; we need to convert on 64 bit
++   */
++  if (sizeof (long) == 4)
++    {
++      cursor_data = (uint8_t *) cursor_image->pixels;
++      free_cursor_data = FALSE;
++    }
++  else
++    {
++      int i, j;
++      uint32_t *cursor_words;
++      unsigned long *p;
++      uint32_t *q;
++
++      cursor_words = g_new (uint32_t,
++                            cursor_image->width * cursor_image->height);
++      cursor_data = (uint8_t *) cursor_words;
++
++      p = cursor_image->pixels;
++      q = cursor_words;
++      for (j = 0; j < cursor_image->height; j++)
++        {
++          for (i = 0; i < cursor_image->width; i++)
++            *(q++) = *(p++);
++        }
++
++      free_cursor_data = TRUE;
++    }
++
++  clutter_backend = clutter_get_default_backend ();
++  cogl_context = clutter_backend_get_cogl_context (clutter_backend);
++  texture = cogl_texture_2d_new_from_data (cogl_context,
++                                          cursor_image->width,
++                                          cursor_image->height,
++                                          CLUTTER_CAIRO_FORMAT_ARGB32,
++                                          cursor_image->width * 4, /* stride */
++                                          cursor_data,
++                                          error);
++
++  if (free_cursor_data)
++    g_free (cursor_data);
++
++  if (!sprite)
++    return FALSE;
++
++  meta_cursor_sprite_set_texture (sprite,
++                                  COGL_TEXTURE (texture),
++                                  cursor_image->xhot,
++                                  cursor_image->yhot);
++  cogl_object_unref (texture);
++  XFree (cursor_image);
++
++  return TRUE;
++}
++
++static void
++meta_screen_cast_xfixes_init_initable_iface (GInitableIface *iface)
++{
++  iface->init = meta_cursor_sprite_xfixes_initable_init;
++}
++
++static void
++meta_cursor_sprite_xfixes_init (MetaCursorSpriteXfixes *sprite_xfixes)
++{
++}
++
++static void
++meta_cursor_sprite_xfixes_class_init (MetaCursorSpriteXfixesClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++  MetaCursorSpriteClass *cursor_sprite_class = META_CURSOR_SPRITE_CLASS (klass);
++
++  object_class->get_property = meta_cursor_sprite_xfixes_get_property;
++  object_class->set_property = meta_cursor_sprite_xfixes_set_property;
++
++  cursor_sprite_class->realize_texture =
++    meta_cursor_sprite_xfixes_realize_texture;
++  cursor_sprite_class->is_animated = meta_cursor_sprite_xfixes_is_animated;
++
++  obj_props[PROP_DISPLAY] =
++    g_param_spec_object ("display",
++                         "display",
++                         "MetaDisplay",
++                         META_TYPE_DISPLAY,
++                         G_PARAM_READWRITE |
++                         G_PARAM_CONSTRUCT_ONLY |
++                         G_PARAM_STATIC_STRINGS);
++  g_object_class_install_properties (object_class, N_PROPS, obj_props);
++}
+diff --git a/src/backends/x11/cm/meta-cursor-sprite-xfixes.h b/src/backends/x11/cm/meta-cursor-sprite-xfixes.h
+new file mode 100644
+index 000000000..c7073fc2c
+--- /dev/null
++++ b/src/backends/x11/cm/meta-cursor-sprite-xfixes.h
+@@ -0,0 +1,36 @@
++/*
++ * Copyright 2013, 2018 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#ifndef META_CURSOR_SPRITE_XFIXES_H
++#define META_CURSOR_SPRITE_XFIXES_H
++
++#include <glib-object.h>
++
++#include "backends/meta-cursor.h"
++#include "meta/types.h"
++
++#define META_TYPE_CURSOR_SPRITE_XFIXES (meta_cursor_sprite_xfixes_get_type ())
++G_DECLARE_FINAL_TYPE (MetaCursorSpriteXfixes,
++                      meta_cursor_sprite_xfixes,
++                      META, CURSOR_SPRITE_XFIXES,
++                      MetaCursorSprite)
++
++MetaCursorSpriteXfixes * meta_cursor_sprite_xfixes_new (MetaDisplay  *display,
++                                                        GError      **error);
++
++#endif /* META_CURSOR_SPRITE_XFIXES_H */
+diff --git a/src/backends/x11/meta-cursor-renderer-x11.c b/src/backends/x11/meta-cursor-renderer-x11.c
+index 82109f1f3..bb3100a91 100644
+--- a/src/backends/x11/meta-cursor-renderer-x11.c
++++ b/src/backends/x11/meta-cursor-renderer-x11.c
+@@ -30,6 +30,7 @@
+ 
+ #include "meta-backend-x11.h"
+ #include "meta-stage-private.h"
++#include "backends/meta-cursor-sprite-xcursor.h"
+ 
+ struct _MetaCursorRendererX11Private
+ {
+@@ -59,13 +60,18 @@ meta_cursor_renderer_x11_update_cursor (MetaCursorRenderer *renderer,
+ 
+   gboolean has_server_cursor = FALSE;
+ 
+-  if (cursor_sprite)
++  if (cursor_sprite && META_IS_CURSOR_SPRITE_XCURSOR (cursor_sprite))
+     {
+-      MetaCursor cursor = meta_cursor_sprite_get_meta_cursor (cursor_sprite);
++      MetaCursorSpriteXcursor *sprite_xcursor =
++        META_CURSOR_SPRITE_XCURSOR (cursor_sprite);
++      MetaCursor cursor;
+ 
++      cursor = meta_cursor_sprite_xcursor_get_cursor (sprite_xcursor);
+       if (cursor != META_CURSOR_NONE)
+         {
+-          Cursor xcursor = meta_cursor_create_x_cursor (xdisplay, cursor);
++          Cursor xcursor;
++
++          xcursor = meta_create_x_cursor (xdisplay, cursor);
+           XDefineCursor (xdisplay, xwindow, xcursor);
+           XFlush (xdisplay);
+           XFreeCursor (xdisplay, xcursor);
+diff --git a/src/backends/x11/nested/meta-cursor-renderer-x11-nested.c b/src/backends/x11/nested/meta-cursor-renderer-x11-nested.c
+index da1a56038..0daae683c 100644
+--- a/src/backends/x11/nested/meta-cursor-renderer-x11-nested.c
++++ b/src/backends/x11/nested/meta-cursor-renderer-x11-nested.c
+@@ -26,6 +26,8 @@
+ 
+ #include "backends/x11/nested/meta-cursor-renderer-x11-nested.h"
+ 
++#include <X11/Xcursor/Xcursor.h>
++
+ #include "backends/x11/meta-backend-x11.h"
+ 
+ struct _MetaCursorRendererX11Nested
+diff --git a/src/core/display.c b/src/core/display.c
+index d6da84b30..e7dd4534b 100644
+--- a/src/core/display.c
++++ b/src/core/display.c
+@@ -3018,7 +3018,7 @@ Cursor
+ meta_display_create_x_cursor (MetaDisplay *display,
+                               MetaCursor   cursor)
+ {
+-  return meta_cursor_create_x_cursor (display->xdisplay, cursor);
++  return meta_create_x_cursor (display->xdisplay, cursor);
+ }
+ 
+ MetaGestureTracker *
+diff --git a/src/core/screen.c b/src/core/screen.c
+index c14bba0cf..048104150 100644
+--- a/src/core/screen.c
++++ b/src/core/screen.c
+@@ -60,6 +60,7 @@
+ #include "x11/xprops.h"
+ 
+ #include "backends/x11/meta-backend-x11.h"
++#include "backends/meta-cursor-sprite-xcursor.h"
+ 
+ static char* get_screen_name (MetaDisplay *display,
+                               int          number);
+@@ -1323,12 +1324,13 @@ find_highest_logical_monitor_scale (MetaBackend      *backend,
+ }
+ 
+ static void
+-root_cursor_prepare_at (MetaCursorSprite *cursor_sprite,
+-                        int               x,
+-                        int               y,
+-                        MetaScreen       *screen)
++root_cursor_prepare_at (MetaCursorSpriteXcursor *sprite_xcursor,
++                        int                      x,
++                        int                      y,
++                        MetaScreen              *screen)
+ {
+   MetaBackend *backend = meta_get_backend ();
++  MetaCursorSprite *cursor_sprite = META_CURSOR_SPRITE (sprite_xcursor);
+ 
+   if (meta_is_stage_views_scaled ())
+     {
+@@ -1337,7 +1339,7 @@ root_cursor_prepare_at (MetaCursorSprite *cursor_sprite,
+       scale = find_highest_logical_monitor_scale (backend, cursor_sprite);
+       if (scale != 0.0)
+         {
+-          meta_cursor_sprite_set_theme_scale (cursor_sprite, scale);
++          meta_cursor_sprite_xcursor_set_theme_scale (sprite_xcursor, scale);
+           meta_cursor_sprite_set_texture_scale (cursor_sprite, 1.0 / scale);
+         }
+     }
+@@ -1353,18 +1355,18 @@ root_cursor_prepare_at (MetaCursorSprite *cursor_sprite,
+       /* Reload the cursor texture if the scale has changed. */
+       if (logical_monitor)
+         {
+-          meta_cursor_sprite_set_theme_scale (cursor_sprite,
+-                                              logical_monitor->scale);
++          meta_cursor_sprite_xcursor_set_theme_scale (sprite_xcursor,
++                                                      logical_monitor->scale);
+           meta_cursor_sprite_set_texture_scale (cursor_sprite, 1.0);
+         }
+     }
+ }
+ 
+ static void
+-manage_root_cursor_sprite_scale (MetaScreen       *screen,
+-                                 MetaCursorSprite *cursor_sprite)
++manage_root_cursor_sprite_scale (MetaScreen              *screen,
++                                 MetaCursorSpriteXcursor *sprite_xcursor)
+ {
+-  g_signal_connect_object (cursor_sprite,
++  g_signal_connect_object (sprite_xcursor,
+                            "prepare-at",
+                            G_CALLBACK (root_cursor_prepare_at),
+                            screen,
+@@ -1377,17 +1379,18 @@ meta_screen_update_cursor (MetaScreen *screen)
+   MetaDisplay *display = screen->display;
+   MetaCursor cursor = screen->current_cursor;
+   Cursor xcursor;
+-  MetaCursorSprite *cursor_sprite;
++  MetaCursorSpriteXcursor *sprite_xcursor;
+   MetaBackend *backend = meta_get_backend ();
+   MetaCursorTracker *cursor_tracker = meta_backend_get_cursor_tracker (backend);
+ 
+-  cursor_sprite = meta_cursor_sprite_from_theme (cursor);
++  sprite_xcursor = meta_cursor_sprite_xcursor_new (cursor);
+ 
+   if (meta_is_wayland_compositor ())
+-    manage_root_cursor_sprite_scale (screen, cursor_sprite);
++    manage_root_cursor_sprite_scale (screen, sprite_xcursor);
+ 
+-  meta_cursor_tracker_set_root_cursor (cursor_tracker, cursor_sprite);
+-  g_object_unref (cursor_sprite);
++  meta_cursor_tracker_set_root_cursor (cursor_tracker,
++                                       META_CURSOR_SPRITE (sprite_xcursor));
++  g_object_unref (sprite_xcursor);
+ 
+   /* Set a cursor for X11 applications that don't specify their own */
+   xcursor = meta_display_create_x_cursor (display, cursor);
+diff --git a/src/wayland/meta-cursor-sprite-wayland.c b/src/wayland/meta-cursor-sprite-wayland.c
+new file mode 100644
+index 000000000..7c14960ff
+--- /dev/null
++++ b/src/wayland/meta-cursor-sprite-wayland.c
+@@ -0,0 +1,75 @@
++/*
++ * Copyright 2015, 2018 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include "config.h"
++
++#include "wayland/meta-cursor-sprite-wayland.h"
++
++struct _MetaCursorSpriteWayland
++{
++  MetaCursorSprite parent;
++
++  MetaWaylandSurface *surface;
++};
++
++G_DEFINE_TYPE (MetaCursorSpriteWayland,
++               meta_cursor_sprite_wayland,
++               META_TYPE_CURSOR_SPRITE)
++
++static void
++meta_cursor_sprite_wayland_realize_texture (MetaCursorSprite *sprite)
++{
++}
++
++static gboolean
++meta_cursor_sprite_wayland_is_animated (MetaCursorSprite *sprite)
++{
++  return FALSE;
++}
++
++MetaCursorSpriteWayland *
++meta_cursor_sprite_wayland_new (MetaWaylandSurface *surface)
++{
++  MetaCursorSpriteWayland *sprite_wayland;
++
++  sprite_wayland = g_object_new (META_TYPE_CURSOR_SPRITE_WAYLAND, NULL);
++  sprite_wayland->surface = surface;
++
++  return sprite_wayland;
++}
++
++MetaWaylandBuffer *
++meta_cursor_sprite_wayland_get_buffer (MetaCursorSpriteWayland *sprite_wayland)
++{
++  return meta_wayland_surface_get_buffer (sprite_wayland->surface);
++}
++
++static void
++meta_cursor_sprite_wayland_init (MetaCursorSpriteWayland *sprite_wayland)
++{
++}
++
++static void
++meta_cursor_sprite_wayland_class_init (MetaCursorSpriteWaylandClass *klass)
++{
++  MetaCursorSpriteClass *cursor_sprite_class = META_CURSOR_SPRITE_CLASS (klass);
++
++  cursor_sprite_class->realize_texture =
++    meta_cursor_sprite_wayland_realize_texture;
++  cursor_sprite_class->is_animated = meta_cursor_sprite_wayland_is_animated;
++}
+diff --git a/src/wayland/meta-cursor-sprite-wayland.h b/src/wayland/meta-cursor-sprite-wayland.h
+new file mode 100644
+index 000000000..107698f3f
+--- /dev/null
++++ b/src/wayland/meta-cursor-sprite-wayland.h
+@@ -0,0 +1,35 @@
++/*
++ * Copyright 2013, 2018 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#ifndef META_CURSOR_SPRITE_WAYLAND_H
++#define META_CURSOR_SPRITE_WAYLAND_H
++
++#include <glib-object.h>
++
++#include "backends/meta-cursor.h"
++#include "wayland/meta-wayland-surface.h"
++
++#define META_TYPE_CURSOR_SPRITE_WAYLAND meta_cursor_sprite_wayland_get_type ()
++G_DECLARE_FINAL_TYPE (MetaCursorSpriteWayland, meta_cursor_sprite_wayland,
++                      META, CURSOR_SPRITE_WAYLAND, MetaCursorSprite)
++
++MetaCursorSpriteWayland * meta_cursor_sprite_wayland_new (MetaWaylandSurface *surface);
++
++MetaWaylandBuffer * meta_cursor_sprite_wayland_get_buffer (MetaCursorSpriteWayland *sprite_wayland);
++
++#endif /* META_CURSOR_SPRITE_WAYLAND_H */
+diff --git a/src/wayland/meta-wayland-buffer.c b/src/wayland/meta-wayland-buffer.c
+index 55564492a..c759eefc1 100644
+--- a/src/wayland/meta-wayland-buffer.c
++++ b/src/wayland/meta-wayland-buffer.c
+@@ -88,6 +88,12 @@ meta_wayland_buffer_from_resource (struct wl_resource *resource)
+   return buffer;
+ }
+ 
++struct wl_resource *
++meta_wayland_buffer_get_resource (MetaWaylandBuffer *buffer)
++{
++  return buffer->resource;
++}
++
+ static gboolean
+ meta_wayland_buffer_is_realized (MetaWaylandBuffer *buffer)
+ {
+diff --git a/src/wayland/meta-wayland-buffer.h b/src/wayland/meta-wayland-buffer.h
+index 5345033c2..e00a41e09 100644
+--- a/src/wayland/meta-wayland-buffer.h
++++ b/src/wayland/meta-wayland-buffer.h
+@@ -68,6 +68,7 @@ G_DECLARE_FINAL_TYPE (MetaWaylandBuffer, meta_wayland_buffer,
+                       META, WAYLAND_BUFFER, GObject);
+ 
+ MetaWaylandBuffer *     meta_wayland_buffer_from_resource       (struct wl_resource    *resource);
++struct wl_resource *    meta_wayland_buffer_get_resource        (MetaWaylandBuffer     *buffer);
+ gboolean                meta_wayland_buffer_attach              (MetaWaylandBuffer     *buffer,
+                                                                  GError               **error);
+ CoglTexture *           meta_wayland_buffer_get_texture         (MetaWaylandBuffer     *buffer);
+diff --git a/src/wayland/meta-wayland-surface-role-cursor.c b/src/wayland/meta-wayland-cursor-surface.c
+similarity index 52%
+rename from src/wayland/meta-wayland-surface-role-cursor.c
+rename to src/wayland/meta-wayland-cursor-surface.c
+index d118a8917..d08af9e8c 100644
+--- a/src/wayland/meta-wayland-surface-role-cursor.c
++++ b/src/wayland/meta-wayland-cursor-surface.c
+@@ -23,7 +23,7 @@
+ 
+ #include <cogl/cogl.h>
+ #include <cogl/cogl-wayland-server.h>
+-#include "meta-wayland-surface-role-cursor.h"
++#include "meta-wayland-cursor-surface.h"
+ #include "meta-wayland-buffer.h"
+ #include "meta-xwayland.h"
+ #include "screen-private.h"
+@@ -31,35 +31,38 @@
+ #include "backends/meta-backend-private.h"
+ #include "backends/meta-logical-monitor.h"
+ #include "core/boxes-private.h"
++#include "wayland/meta-cursor-sprite-wayland.h"
+ 
+-typedef struct _MetaWaylandSurfaceRoleCursorPrivate MetaWaylandSurfaceRoleCursorPrivate;
++typedef struct _MetaWaylandCursorSurfacePrivate MetaWaylandCursorSurfacePrivate;
+ 
+-struct _MetaWaylandSurfaceRoleCursorPrivate
++struct _MetaWaylandCursorSurfacePrivate
+ {
+   int hot_x;
+   int hot_y;
+-  MetaCursorSprite *cursor_sprite;
++  MetaCursorSpriteWayland *cursor_sprite;
+   MetaCursorRenderer *cursor_renderer;
+   MetaWaylandBuffer *buffer;
+   struct wl_list frame_callbacks;
+   gulong cursor_painted_handler_id;
+ };
+ 
+-G_DEFINE_TYPE_WITH_PRIVATE (MetaWaylandSurfaceRoleCursor,
+-                            meta_wayland_surface_role_cursor,
++G_DEFINE_TYPE_WITH_PRIVATE (MetaWaylandCursorSurface,
++                            meta_wayland_cursor_surface,
+                             META_TYPE_WAYLAND_SURFACE_ROLE)
+ 
+ static void
+-update_cursor_sprite_texture (MetaWaylandSurfaceRoleCursor *cursor_role)
++update_cursor_sprite_texture (MetaWaylandCursorSurface *cursor_surface)
+ {
+-  MetaWaylandSurfaceRoleCursorPrivate *priv = meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
+-  MetaWaylandSurface *surface = meta_wayland_surface_role_get_surface (META_WAYLAND_SURFACE_ROLE (cursor_role));
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
++  MetaWaylandSurface *surface =
++    meta_wayland_surface_role_get_surface (META_WAYLAND_SURFACE_ROLE (cursor_surface));
+   MetaWaylandBuffer *buffer = meta_wayland_surface_get_buffer (surface);
+-  MetaCursorSprite *cursor_sprite = priv->cursor_sprite;
++  MetaCursorSprite *cursor_sprite = META_CURSOR_SPRITE (priv->cursor_sprite);
+ 
+   g_return_if_fail (!buffer || buffer->texture);
+ 
+-  if (!priv->cursor_renderer || !cursor_sprite)
++  if (!priv->cursor_renderer)
+     return;
+ 
+   if (buffer)
+@@ -68,20 +71,6 @@ update_cursor_sprite_texture (MetaWaylandSurfaceRoleCursor *cursor_role)
+                                       buffer->texture,
+                                       priv->hot_x * surface->scale,
+                                       priv->hot_y * surface->scale);
+-
+-      if (priv->buffer)
+-        {
+-          struct wl_resource *buffer_resource;
+-
+-          g_assert (priv->buffer == buffer);
+-          buffer_resource = buffer->resource;
+-          meta_cursor_renderer_realize_cursor_from_wl_buffer (priv->cursor_renderer,
+-                                                              cursor_sprite,
+-                                                              buffer_resource);
+-
+-          meta_wayland_surface_unref_buffer_use_count (surface);
+-          g_clear_object (&priv->buffer);
+-        }
+     }
+   else
+     {
+@@ -92,12 +81,12 @@ update_cursor_sprite_texture (MetaWaylandSurfaceRoleCursor *cursor_role)
+ }
+ 
+ static void
+-cursor_sprite_prepare_at (MetaCursorSprite             *cursor_sprite,
+-                          int                           x,
+-                          int                           y,
+-                          MetaWaylandSurfaceRoleCursor *cursor_role)
++cursor_sprite_prepare_at (MetaCursorSprite         *cursor_sprite,
++                          int                       x,
++                          int                       y,
++                          MetaWaylandCursorSurface *cursor_surface)
+ {
+-  MetaWaylandSurfaceRole *role = META_WAYLAND_SURFACE_ROLE (cursor_role);
++  MetaWaylandSurfaceRole *role = META_WAYLAND_SURFACE_ROLE (cursor_surface);
+   MetaWaylandSurface *surface = meta_wayland_surface_role_get_surface (role);
+ 
+   if (!meta_xwayland_is_xwayland_surface (surface))
+@@ -126,14 +115,14 @@ cursor_sprite_prepare_at (MetaCursorSprite             *cursor_sprite,
+ }
+ 
+ static void
+-cursor_surface_role_assigned (MetaWaylandSurfaceRole *surface_role)
++meta_wayland_cursor_surface_assigned (MetaWaylandSurfaceRole *surface_role)
+ {
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (surface_role);
+-  MetaWaylandSurfaceRoleCursor *cursor_role =
+-    META_WAYLAND_SURFACE_ROLE_CURSOR (surface_role);
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurface *cursor_surface =
++    META_WAYLAND_CURSOR_SURFACE (surface_role);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+ 
+   wl_list_insert_list (&priv->frame_callbacks,
+                        &surface->pending_frame_callback_list);
+@@ -141,13 +130,13 @@ cursor_surface_role_assigned (MetaWaylandSurfaceRole *surface_role)
+ }
+ 
+ static void
+-cursor_surface_role_pre_commit (MetaWaylandSurfaceRole  *surface_role,
+-                                MetaWaylandPendingState *pending)
++meta_wayland_cursor_surface_pre_commit (MetaWaylandSurfaceRole  *surface_role,
++                                        MetaWaylandPendingState *pending)
+ {
+-  MetaWaylandSurfaceRoleCursor *cursor_role =
+-    META_WAYLAND_SURFACE_ROLE_CURSOR (surface_role);
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurface *cursor_surface =
++    META_WAYLAND_CURSOR_SURFACE (surface_role);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (surface_role);
+ 
+@@ -159,13 +148,13 @@ cursor_surface_role_pre_commit (MetaWaylandSurfaceRole  *surface_role,
+ }
+ 
+ static void
+-cursor_surface_role_commit (MetaWaylandSurfaceRole  *surface_role,
+-                            MetaWaylandPendingState *pending)
++meta_wayland_cursor_surface_commit (MetaWaylandSurfaceRole  *surface_role,
++                                    MetaWaylandPendingState *pending)
+ {
+-  MetaWaylandSurfaceRoleCursor *cursor_role =
+-    META_WAYLAND_SURFACE_ROLE_CURSOR (surface_role);
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurface *cursor_surface =
++    META_WAYLAND_CURSOR_SURFACE (surface_role);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (surface_role);
+   MetaWaylandBuffer *buffer = meta_wayland_surface_get_buffer (surface);
+@@ -182,19 +171,19 @@ cursor_surface_role_commit (MetaWaylandSurfaceRole  *surface_role,
+   wl_list_init (&pending->frame_callback_list);
+ 
+   if (pending->newly_attached)
+-    update_cursor_sprite_texture (META_WAYLAND_SURFACE_ROLE_CURSOR (surface_role));
++    update_cursor_sprite_texture (META_WAYLAND_CURSOR_SURFACE (surface_role));
+ }
+ 
+ static gboolean
+-cursor_surface_role_is_on_logical_monitor (MetaWaylandSurfaceRole *role,
+-                                           MetaLogicalMonitor     *logical_monitor)
++meta_wayland_cursor_surface_is_on_logical_monitor (MetaWaylandSurfaceRole *role,
++                                                   MetaLogicalMonitor     *logical_monitor)
+ {
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (role);
+-  MetaWaylandSurfaceRoleCursor *cursor_role =
+-    META_WAYLAND_SURFACE_ROLE_CURSOR (surface->role);
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurface *cursor_surface =
++    META_WAYLAND_CURSOR_SURFACE (surface->role);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+   ClutterPoint point;
+   ClutterRect logical_monitor_rect;
+ 
+@@ -207,12 +196,12 @@ cursor_surface_role_is_on_logical_monitor (MetaWaylandSurfaceRole *role,
+ }
+ 
+ static void
+-cursor_surface_role_dispose (GObject *object)
++meta_wayland_cursor_surface_dispose (GObject *object)
+ {
+-  MetaWaylandSurfaceRoleCursor *cursor_role =
+-    META_WAYLAND_SURFACE_ROLE_CURSOR (object);
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurface *cursor_surface =
++    META_WAYLAND_CURSOR_SURFACE (object);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (META_WAYLAND_SURFACE_ROLE (object));
+   MetaWaylandFrameCallback *cb, *next;
+@@ -221,7 +210,7 @@ cursor_surface_role_dispose (GObject *object)
+     wl_resource_destroy (cb->resource);
+ 
+   g_signal_handlers_disconnect_by_func (priv->cursor_sprite,
+-                                        cursor_sprite_prepare_at, cursor_role);
++                                        cursor_sprite_prepare_at, cursor_surface);
+ 
+   g_clear_object (&priv->cursor_renderer);
+   g_clear_object (&priv->cursor_sprite);
+@@ -232,18 +221,18 @@ cursor_surface_role_dispose (GObject *object)
+       g_clear_object (&priv->buffer);
+     }
+ 
+-  G_OBJECT_CLASS (meta_wayland_surface_role_cursor_parent_class)->dispose (object);
++  G_OBJECT_CLASS (meta_wayland_cursor_surface_parent_class)->dispose (object);
+ }
+ 
+ static void
+-cursor_surface_role_constructed (GObject *object)
++meta_wayland_cursor_surface_constructed (GObject *object)
+ {
+-  MetaWaylandSurfaceRoleCursor *cursor_role =
+-    META_WAYLAND_SURFACE_ROLE_CURSOR (object);
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurface *cursor_surface =
++    META_WAYLAND_CURSOR_SURFACE (object);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+   MetaWaylandSurfaceRole *surface_role =
+-    META_WAYLAND_SURFACE_ROLE (cursor_role);
++    META_WAYLAND_SURFACE_ROLE (cursor_surface);
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (surface_role);
+   MetaWaylandBuffer *buffer;
+@@ -257,55 +246,57 @@ cursor_surface_role_constructed (GObject *object)
+       g_set_object (&priv->buffer, buffer);
+       meta_wayland_surface_ref_buffer_use_count (surface);
+     }
+-}
+ 
+-static void
+-meta_wayland_surface_role_cursor_init (MetaWaylandSurfaceRoleCursor *role)
+-{
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (role);
+-
+-  priv->cursor_sprite = meta_cursor_sprite_new ();
++  priv->cursor_sprite = meta_cursor_sprite_wayland_new (surface);
+   g_signal_connect_object (priv->cursor_sprite,
+                            "prepare-at",
+                            G_CALLBACK (cursor_sprite_prepare_at),
+-                           role,
++                           cursor_surface,
+                            0);
++}
++
++static void
++meta_wayland_cursor_surface_init (MetaWaylandCursorSurface *role)
++{
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (role);
++
+   wl_list_init (&priv->frame_callbacks);
+ }
+ 
+ static void
+-meta_wayland_surface_role_cursor_class_init (MetaWaylandSurfaceRoleCursorClass *klass)
++meta_wayland_cursor_surface_class_init (MetaWaylandCursorSurfaceClass *klass)
+ {
+   MetaWaylandSurfaceRoleClass *surface_role_class =
+     META_WAYLAND_SURFACE_ROLE_CLASS (klass);
+   GObjectClass *object_class = G_OBJECT_CLASS (klass);
+ 
+-  surface_role_class->assigned = cursor_surface_role_assigned;
+-  surface_role_class->pre_commit = cursor_surface_role_pre_commit;
+-  surface_role_class->commit = cursor_surface_role_commit;
+-  surface_role_class->is_on_logical_monitor = cursor_surface_role_is_on_logical_monitor;
++  surface_role_class->assigned = meta_wayland_cursor_surface_assigned;
++  surface_role_class->pre_commit = meta_wayland_cursor_surface_pre_commit;
++  surface_role_class->commit = meta_wayland_cursor_surface_commit;
++  surface_role_class->is_on_logical_monitor =
++    meta_wayland_cursor_surface_is_on_logical_monitor;
+ 
+-  object_class->constructed = cursor_surface_role_constructed;
+-  object_class->dispose = cursor_surface_role_dispose;
++  object_class->constructed = meta_wayland_cursor_surface_constructed;
++  object_class->dispose = meta_wayland_cursor_surface_dispose;
+ }
+ 
+ MetaCursorSprite *
+-meta_wayland_surface_role_cursor_get_sprite (MetaWaylandSurfaceRoleCursor *cursor_role)
++meta_wayland_cursor_surface_get_sprite (MetaWaylandCursorSurface *cursor_surface)
+ {
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+ 
+-  return priv->cursor_sprite;
++  return META_CURSOR_SPRITE (priv->cursor_sprite);
+ }
+ 
+ void
+-meta_wayland_surface_role_cursor_set_hotspot (MetaWaylandSurfaceRoleCursor *cursor_role,
+-                                              gint                          hotspot_x,
+-                                              gint                          hotspot_y)
++meta_wayland_cursor_surface_set_hotspot (MetaWaylandCursorSurface *cursor_surface,
++                                         int                       hotspot_x,
++                                         int                       hotspot_y)
+ {
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+ 
+   if (priv->hot_x == hotspot_x &&
+       priv->hot_y == hotspot_y)
+@@ -313,16 +304,16 @@ meta_wayland_surface_role_cursor_set_hotspot (MetaWaylandSurfaceRoleCursor *curs
+ 
+   priv->hot_x = hotspot_x;
+   priv->hot_y = hotspot_y;
+-  update_cursor_sprite_texture (cursor_role);
++  update_cursor_sprite_texture (cursor_surface);
+ }
+ 
+ void
+-meta_wayland_surface_role_cursor_get_hotspot (MetaWaylandSurfaceRoleCursor *cursor_role,
+-                                              gint                         *hotspot_x,
+-                                              gint                         *hotspot_y)
++meta_wayland_cursor_surface_get_hotspot (MetaWaylandCursorSurface *cursor_surface,
++                                         int                      *hotspot_x,
++                                         int                      *hotspot_y)
+ {
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+ 
+   if (hotspot_x)
+     *hotspot_x = priv->hot_x;
+@@ -331,15 +322,15 @@ meta_wayland_surface_role_cursor_get_hotspot (MetaWaylandSurfaceRoleCursor *curs
+ }
+ 
+ static void
+-on_cursor_painted (MetaCursorRenderer           *renderer,
+-                   MetaCursorSprite             *displayed_sprite,
+-                   MetaWaylandSurfaceRoleCursor *cursor_role)
++on_cursor_painted (MetaCursorRenderer       *renderer,
++                   MetaCursorSprite         *displayed_sprite,
++                   MetaWaylandCursorSurface *cursor_surface)
+ {
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+   guint32 time = (guint32) (g_get_monotonic_time () / 1000);
+ 
+-  if (displayed_sprite != priv->cursor_sprite)
++  if (displayed_sprite != META_CURSOR_SPRITE (priv->cursor_sprite))
+     return;
+ 
+   while (!wl_list_empty (&priv->frame_callbacks))
+@@ -353,11 +344,11 @@ on_cursor_painted (MetaCursorRenderer           *renderer,
+ }
+ 
+ void
+-meta_wayland_surface_role_cursor_set_renderer (MetaWaylandSurfaceRoleCursor *cursor_role,
+-                                               MetaCursorRenderer           *renderer)
++meta_wayland_cursor_surface_set_renderer (MetaWaylandCursorSurface *cursor_surface,
++                                          MetaCursorRenderer       *renderer)
+ {
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+ 
+   if (priv->cursor_renderer == renderer)
+     return;
+@@ -373,19 +364,19 @@ meta_wayland_surface_role_cursor_set_renderer (MetaWaylandSurfaceRoleCursor *cur
+     {
+       priv->cursor_painted_handler_id =
+         g_signal_connect_object (renderer, "cursor-painted",
+-                                 G_CALLBACK (on_cursor_painted), cursor_role, 0);
++                                 G_CALLBACK (on_cursor_painted), cursor_surface, 0);
+       g_object_ref (renderer);
+     }
+ 
+   priv->cursor_renderer = renderer;
+-  update_cursor_sprite_texture (cursor_role);
++  update_cursor_sprite_texture (cursor_surface);
+ }
+ 
+ MetaCursorRenderer *
+-meta_wayland_surface_role_cursor_get_renderer (MetaWaylandSurfaceRoleCursor *cursor_role)
++meta_wayland_cursor_surface_get_renderer (MetaWaylandCursorSurface *cursor_surface)
+ {
+-  MetaWaylandSurfaceRoleCursorPrivate *priv =
+-    meta_wayland_surface_role_cursor_get_instance_private (cursor_role);
++  MetaWaylandCursorSurfacePrivate *priv =
++    meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+ 
+   return priv->cursor_renderer;
+ }
+diff --git a/src/wayland/meta-wayland-cursor-surface.h b/src/wayland/meta-wayland-cursor-surface.h
+new file mode 100644
+index 000000000..2461a85b3
+--- /dev/null
++++ b/src/wayland/meta-wayland-cursor-surface.h
+@@ -0,0 +1,52 @@
++/*
++ * Wayland Support
++ *
++ * Copyright (C) 2015 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
++ * 02111-1307, USA.
++ */
++
++#ifndef META_WAYLAND_CURSOR_SURFACE_H
++#define META_WAYLAND_CURSOR_SURFACE_H
++
++#include "meta-wayland-surface.h"
++#include "backends/meta-cursor-renderer.h"
++
++struct _MetaWaylandCursorSurfaceClass
++{
++  MetaWaylandSurfaceRoleClass parent_class;
++};
++
++#define META_TYPE_WAYLAND_CURSOR_SURFACE (meta_wayland_cursor_surface_get_type ())
++G_DECLARE_DERIVABLE_TYPE (MetaWaylandCursorSurface,
++                          meta_wayland_cursor_surface,
++                          META, WAYLAND_CURSOR_SURFACE,
++                          MetaWaylandSurfaceRole);
++
++MetaCursorSprite *   meta_wayland_cursor_surface_get_sprite   (MetaWaylandCursorSurface *cursor_surface);
++
++void                 meta_wayland_cursor_surface_set_hotspot  (MetaWaylandCursorSurface *cursor_surface,
++                                                               int                       hotspot_x,
++                                                               int                       hotspot_y);
++void                 meta_wayland_cursor_surface_get_hotspot  (MetaWaylandCursorSurface *cursor_surface,
++                                                               int                       *hotspot_x,
++                                                               int                       *hotspot_y);
++void                 meta_wayland_cursor_surface_set_renderer (MetaWaylandCursorSurface *cursor_surface,
++                                                               MetaCursorRenderer       *renderer);
++MetaCursorRenderer * meta_wayland_cursor_surface_get_renderer (MetaWaylandCursorSurface *cursor_surface);
++
++
++#endif /* META_WAYLAND_CURSOR_SURFACE_H */
+diff --git a/src/wayland/meta-wayland-pointer.c b/src/wayland/meta-wayland-pointer.c
+index d5c90c169..e8138576e 100644
+--- a/src/wayland/meta-wayland-pointer.c
++++ b/src/wayland/meta-wayland-pointer.c
+@@ -55,7 +55,7 @@
+ #include "meta-wayland-seat.h"
+ #include "meta-wayland-surface.h"
+ #include "meta-wayland-buffer.h"
+-#include "meta-wayland-surface-role-cursor.h"
++#include "meta-wayland-cursor-surface.h"
+ #include "meta-xwayland.h"
+ #include "meta-cursor.h"
+ #include "meta-cursor-tracker-private.h"
+@@ -1025,10 +1025,10 @@ meta_wayland_pointer_update_cursor_surface (MetaWaylandPointer *pointer)
+ 
+       if (pointer->cursor_surface)
+         {
+-          MetaWaylandSurfaceRoleCursor *cursor_role =
+-            META_WAYLAND_SURFACE_ROLE_CURSOR (pointer->cursor_surface->role);
++          MetaWaylandCursorSurface *cursor_surface =
++            META_WAYLAND_CURSOR_SURFACE (pointer->cursor_surface->role);
+ 
+-          cursor_sprite = meta_wayland_surface_role_cursor_get_sprite (cursor_role);
++          cursor_sprite = meta_wayland_cursor_surface_get_sprite (cursor_surface);
+         }
+ 
+       meta_cursor_tracker_set_window_cursor (cursor_tracker, cursor_sprite);
+@@ -1102,7 +1102,7 @@ pointer_set_cursor (struct wl_client *client,
+ 
+   if (surface &&
+       !meta_wayland_surface_assign_role (surface,
+-                                         META_TYPE_WAYLAND_SURFACE_ROLE_CURSOR,
++                                         META_TYPE_WAYLAND_CURSOR_SURFACE,
+                                          NULL))
+     {
+       wl_resource_post_error (resource, WL_POINTER_ERROR_ROLE,
+@@ -1115,13 +1115,13 @@ pointer_set_cursor (struct wl_client *client,
+     {
+       MetaCursorRenderer *cursor_renderer =
+         meta_backend_get_cursor_renderer (meta_get_backend ());
+-      MetaWaylandSurfaceRoleCursor *cursor_role;
++      MetaWaylandCursorSurface *cursor_surface;
+ 
+-      cursor_role = META_WAYLAND_SURFACE_ROLE_CURSOR (surface->role);
+-      meta_wayland_surface_role_cursor_set_renderer (cursor_role,
+-                                                     cursor_renderer);
+-      meta_wayland_surface_role_cursor_set_hotspot (cursor_role,
+-                                                    hot_x, hot_y);
++      cursor_surface = META_WAYLAND_CURSOR_SURFACE (surface->role);
++      meta_wayland_cursor_surface_set_renderer (cursor_surface,
++                                                cursor_renderer);
++      meta_wayland_cursor_surface_set_hotspot (cursor_surface,
++                                               hot_x, hot_y);
+     }
+ 
+   meta_wayland_pointer_set_cursor_surface (pointer, surface);
+diff --git a/src/wayland/meta-wayland-surface-role-cursor.h b/src/wayland/meta-wayland-surface-role-cursor.h
+deleted file mode 100644
+index b6d6d4a6a..000000000
+--- a/src/wayland/meta-wayland-surface-role-cursor.h
++++ /dev/null
+@@ -1,52 +0,0 @@
+-/*
+- * Wayland Support
+- *
+- * Copyright (C) 2015 Red Hat, Inc.
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License as
+- * published by the Free Software Foundation; either version 2 of the
+- * License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
+- * 02111-1307, USA.
+- */
+-
+-#ifndef META_WAYLAND_SURFACE_ROLE_CURSOR_H
+-#define META_WAYLAND_SURFACE_ROLE_CURSOR_H
+-
+-#include "meta-wayland-surface.h"
+-#include "backends/meta-cursor-renderer.h"
+-
+-struct _MetaWaylandSurfaceRoleCursorClass
+-{
+-  MetaWaylandSurfaceRoleClass parent_class;
+-};
+-
+-#define META_TYPE_WAYLAND_SURFACE_ROLE_CURSOR (meta_wayland_surface_role_cursor_get_type ())
+-G_DECLARE_DERIVABLE_TYPE (MetaWaylandSurfaceRoleCursor,
+-                          meta_wayland_surface_role_cursor,
+-                          META, WAYLAND_SURFACE_ROLE_CURSOR,
+-                          MetaWaylandSurfaceRole);
+-
+-MetaCursorSprite *   meta_wayland_surface_role_cursor_get_sprite   (MetaWaylandSurfaceRoleCursor *cursor_role);
+-
+-void                 meta_wayland_surface_role_cursor_set_hotspot  (MetaWaylandSurfaceRoleCursor *cursor_role,
+-                                                                    gint                          hotspot_x,
+-                                                                    gint                          hotspot_y);
+-void                 meta_wayland_surface_role_cursor_get_hotspot  (MetaWaylandSurfaceRoleCursor *cursor_role,
+-                                                                    gint                         *hotspot_x,
+-                                                                    gint                         *hotspot_y);
+-void                 meta_wayland_surface_role_cursor_set_renderer (MetaWaylandSurfaceRoleCursor *cursor_role,
+-                                                                    MetaCursorRenderer           *renderer);
+-MetaCursorRenderer * meta_wayland_surface_role_cursor_get_renderer (MetaWaylandSurfaceRoleCursor *cursor_role);
+-
+-
+-#endif /* META_WAYLAND_SURFACE_ROLE_CURSOR_H */
+diff --git a/src/wayland/meta-wayland-surface-role-tablet-cursor.c b/src/wayland/meta-wayland-tablet-cursor-surface.c
+similarity index 63%
+rename from src/wayland/meta-wayland-surface-role-tablet-cursor.c
+rename to src/wayland/meta-wayland-tablet-cursor-surface.c
+index 075a5e4f6..808bf2820 100644
+--- a/src/wayland/meta-wayland-surface-role-tablet-cursor.c
++++ b/src/wayland/meta-wayland-tablet-cursor-surface.c
+@@ -20,23 +20,24 @@
+  */
+ 
+ #include "config.h"
+-#include "meta-wayland-surface-role-tablet-cursor.h"
+ 
+-struct _MetaWaylandSurfaceRoleTabletCursor
++#include "meta-wayland-tablet-cursor-surface.h"
++
++struct _MetaWaylandTabletCursorSurface
+ {
+-  MetaWaylandSurfaceRoleCursor parent;
++  MetaWaylandCursorSurface parent;
+ };
+ 
+-G_DEFINE_TYPE (MetaWaylandSurfaceRoleTabletCursor,
+-               meta_wayland_surface_role_tablet_cursor,
+-               META_TYPE_WAYLAND_SURFACE_ROLE_CURSOR)
++G_DEFINE_TYPE (MetaWaylandTabletCursorSurface,
++               meta_wayland_tablet_cursor_surface,
++               META_TYPE_WAYLAND_CURSOR_SURFACE)
+ 
+ static void
+-meta_wayland_surface_role_tablet_cursor_init (MetaWaylandSurfaceRoleTabletCursor *role)
++meta_wayland_tablet_cursor_surface_init (MetaWaylandTabletCursorSurface *role)
+ {
+ }
+ 
+ static void
+-meta_wayland_surface_role_tablet_cursor_class_init (MetaWaylandSurfaceRoleTabletCursorClass *klass)
++meta_wayland_tablet_cursor_surface_class_init (MetaWaylandTabletCursorSurfaceClass *klass)
+ {
+ }
+diff --git a/src/wayland/meta-wayland-surface-role-tablet-cursor.h b/src/wayland/meta-wayland-tablet-cursor-surface.h
+similarity index 59%
+rename from src/wayland/meta-wayland-surface-role-tablet-cursor.h
+rename to src/wayland/meta-wayland-tablet-cursor-surface.h
+index 69fc6cf0f..5c5c198f5 100644
+--- a/src/wayland/meta-wayland-surface-role-tablet-cursor.h
++++ b/src/wayland/meta-wayland-tablet-cursor-surface.h
+@@ -19,15 +19,15 @@
+  * 02111-1307, USA.
+  */
+ 
+-#ifndef META_WAYLAND_SURFACE_ROLE_TABLET_CURSOR_H
+-#define META_WAYLAND_SURFACE_ROLE_TABLET_CURSOR_H
++#ifndef META_WAYLAND_TABLET_CURSOR_SURFACE_H
++#define META_WAYLAND_TABLET_CURSOR_SURFACE_H
+ 
+-#include "meta-wayland-surface-role-cursor.h"
++#include "meta-wayland-cursor-surface.h"
+ 
+-#define META_TYPE_WAYLAND_SURFACE_ROLE_TABLET_CURSOR (meta_wayland_surface_role_tablet_cursor_get_type ())
+-G_DECLARE_FINAL_TYPE (MetaWaylandSurfaceRoleTabletCursor,
+-                      meta_wayland_surface_role_tablet_cursor,
+-                      META, WAYLAND_SURFACE_ROLE_TABLET_CURSOR,
+-                      MetaWaylandSurfaceRoleCursor);
++#define META_TYPE_WAYLAND_TABLET_CURSOR_SURFACE (meta_wayland_tablet_cursor_surface_get_type ())
++G_DECLARE_FINAL_TYPE (MetaWaylandTabletCursorSurface,
++                      meta_wayland_tablet_cursor_surface,
++                      META, WAYLAND_TABLET_CURSOR_SURFACE,
++                      MetaWaylandCursorSurface)
+ 
+-#endif /* META_WAYLAND_SURFACE_ROLE_TABLET_CURSOR_H */
++#endif /* META_WAYLAND_TABLET_CURSOR_SURFACE_H */
+diff --git a/src/wayland/meta-wayland-tablet-tool.c b/src/wayland/meta-wayland-tablet-tool.c
+index 4b57d4156..d373f8d25 100644
+--- a/src/wayland/meta-wayland-tablet-tool.c
++++ b/src/wayland/meta-wayland-tablet-tool.c
+@@ -31,7 +31,7 @@
+ #include <wayland-server.h>
+ #include "tablet-unstable-v2-server-protocol.h"
+ #include "meta-wayland-private.h"
+-#include "meta-wayland-surface-role-tablet-cursor.h"
++#include "meta-wayland-tablet-cursor-surface.h"
+ #include "meta-surface-actor-wayland.h"
+ #include "meta-wayland-tablet.h"
+ #include "meta-wayland-tablet-seat.h"
+@@ -90,16 +90,16 @@ meta_wayland_tablet_tool_update_cursor_surface (MetaWaylandTabletTool *tool)
+       if (tool->cursor_surface &&
+           meta_wayland_surface_get_buffer (tool->cursor_surface))
+         {
+-          MetaWaylandSurfaceRoleCursor *cursor_role =
+-            META_WAYLAND_SURFACE_ROLE_CURSOR (tool->cursor_surface->role);
++          MetaWaylandCursorSurface *cursor_surface =
++            META_WAYLAND_CURSOR_SURFACE (tool->cursor_surface->role);
+ 
+-          cursor = meta_wayland_surface_role_cursor_get_sprite (cursor_role);
++          cursor = meta_wayland_cursor_surface_get_sprite (cursor_surface);
+         }
+       else
+         cursor = NULL;
+     }
+   else if (tool->current_tablet)
+-    cursor = tool->default_sprite;
++    cursor = META_CURSOR_SPRITE (tool->default_sprite);
+   else
+     cursor = NULL;
+ 
+@@ -382,10 +382,10 @@ tablet_tool_handle_cursor_surface_destroy (struct wl_listener *listener,
+ }
+ 
+ static void
+-tool_cursor_prepare_at (MetaCursorSprite      *cursor_sprite,
+-                        int                    x,
+-                        int                    y,
+-                        MetaWaylandTabletTool *tool)
++tool_cursor_prepare_at (MetaCursorSpriteXcursor *sprite_xcursor,
++                        int                      x,
++                        int                      y,
++                        MetaWaylandTabletTool   *tool)
+ {
+   MetaBackend *backend = meta_get_backend ();
+   MetaMonitorManager *monitor_manager =
+@@ -397,7 +397,8 @@ tool_cursor_prepare_at (MetaCursorSprite      *cursor_sprite,
+ 
+   /* Reload the cursor texture if the scale has changed. */
+   if (logical_monitor)
+-    meta_cursor_sprite_set_theme_scale (cursor_sprite, logical_monitor->scale);
++    meta_cursor_sprite_xcursor_set_theme_scale (sprite_xcursor,
++                                                logical_monitor->scale);
+ }
+ 
+ MetaWaylandTabletTool *
+@@ -417,7 +418,7 @@ meta_wayland_tablet_tool_new (MetaWaylandTabletSeat  *seat,
+   tool->focus_surface_destroy_listener.notify = tablet_tool_handle_focus_surface_destroy;
+   tool->cursor_surface_destroy_listener.notify = tablet_tool_handle_cursor_surface_destroy;
+ 
+-  tool->default_sprite = meta_cursor_sprite_from_theme (META_CURSOR_CROSSHAIR);
++  tool->default_sprite = meta_cursor_sprite_xcursor_new (META_CURSOR_CROSSHAIR);
+   tool->prepare_at_signal_id =
+     g_signal_connect (tool->default_sprite, "prepare-at",
+                       G_CALLBACK (tool_cursor_prepare_at), tool);
+@@ -471,7 +472,7 @@ tool_set_cursor (struct wl_client   *client,
+ 
+   if (surface &&
+       !meta_wayland_surface_assign_role (surface,
+-                                         META_TYPE_WAYLAND_SURFACE_ROLE_TABLET_CURSOR,
++                                         META_TYPE_WAYLAND_TABLET_CURSOR_SURFACE,
+                                          NULL))
+     {
+       wl_resource_post_error (resource, WL_POINTER_ERROR_ROLE,
+@@ -482,13 +483,13 @@ tool_set_cursor (struct wl_client   *client,
+ 
+   if (surface)
+     {
+-      MetaWaylandSurfaceRoleCursor *cursor_role;
++      MetaWaylandCursorSurface *cursor_surface;
+ 
+-      cursor_role = META_WAYLAND_SURFACE_ROLE_CURSOR (surface->role);
+-      meta_wayland_surface_role_cursor_set_renderer (cursor_role,
+-                                                     tool->cursor_renderer);
+-      meta_wayland_surface_role_cursor_set_hotspot (cursor_role,
+-                                                    hotspot_x, hotspot_y);
++      cursor_surface = META_WAYLAND_CURSOR_SURFACE (surface->role);
++      meta_wayland_cursor_surface_set_renderer (cursor_surface,
++                                                tool->cursor_renderer);
++      meta_wayland_cursor_surface_set_hotspot (cursor_surface,
++                                               hotspot_x, hotspot_y);
+     }
+ 
+   meta_wayland_tablet_tool_set_cursor_surface (tool, surface);
+diff --git a/src/wayland/meta-wayland-tablet-tool.h b/src/wayland/meta-wayland-tablet-tool.h
+index 8cd930086..011972fc2 100644
+--- a/src/wayland/meta-wayland-tablet-tool.h
++++ b/src/wayland/meta-wayland-tablet-tool.h
+@@ -28,6 +28,7 @@
+ 
+ #include "meta-wayland-types.h"
+ #include "meta-cursor-renderer.h"
++#include "backends/meta-cursor-sprite-xcursor.h"
+ 
+ struct _MetaWaylandTabletTool
+ {
+@@ -43,7 +44,7 @@ struct _MetaWaylandTabletTool
+   MetaWaylandSurface *cursor_surface;
+   struct wl_listener cursor_surface_destroy_listener;
+   MetaCursorRenderer *cursor_renderer;
+-  MetaCursorSprite *default_sprite;
++  MetaCursorSpriteXcursor *default_sprite;
+   guint prepare_at_signal_id;
+ 
+   MetaWaylandSurface *current;

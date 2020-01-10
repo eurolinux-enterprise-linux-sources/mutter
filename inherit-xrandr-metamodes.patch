@@ -1,0 +1,365 @@
+From ea252d6e8f0e882ad2868853babcb5de4b9d9a6a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 18 Mar 2019 17:08:11 +0100
+Subject: [PATCH 1/2] monitor-config-manager: Use current mode when deriving
+ current config
+
+Instead of overriding the existing mode with the preferred mode of the monitor,
+use the one already configured. Also use the MetaMonitor API for deriving the
+position of the monitor in the screen coordinate space.
+---
+ src/backends/meta-monitor-config-manager.c | 77 +++++++++++++---------
+ 1 file changed, 47 insertions(+), 30 deletions(-)
+
+diff --git a/src/backends/meta-monitor-config-manager.c b/src/backends/meta-monitor-config-manager.c
+index 1ad342a44..aa8105edf 100644
+--- a/src/backends/meta-monitor-config-manager.c
++++ b/src/backends/meta-monitor-config-manager.c
+@@ -508,20 +508,19 @@ create_monitor_config (MetaMonitor     *monitor,
+ }
+ 
+ static MetaLogicalMonitorConfig *
+-create_preferred_logical_monitor_config (MetaMonitorManager          *monitor_manager,
+-                                         MetaMonitor                 *monitor,
+-                                         int                          x,
+-                                         int                          y,
+-                                         MetaLogicalMonitorConfig    *primary_logical_monitor_config,
+-                                         MetaLogicalMonitorLayoutMode layout_mode)
++create_logical_monitor_config (MetaMonitorManager           *monitor_manager,
++                               MetaMonitor                  *monitor,
++                               MetaMonitorMode              *mode,
++                               int                           x,
++                               int                           y,
++                               MetaLogicalMonitorConfig     *primary_logical_monitor_config,
++                               MetaLogicalMonitorLayoutMode  layout_mode)
+ {
+-  MetaMonitorMode *mode;
+   int width, height;
+   float scale;
+   MetaMonitorConfig *monitor_config;
+   MetaLogicalMonitorConfig *logical_monitor_config;
+ 
+-  mode = meta_monitor_get_preferred_mode (monitor);
+   meta_monitor_mode_get_resolution (mode, &width, &height);
+ 
+   if ((meta_monitor_manager_get_capabilities (monitor_manager) &
+@@ -561,22 +560,40 @@ create_preferred_logical_monitor_config (MetaMonitorManager          *monitor_ma
+ }
+ 
+ static MetaLogicalMonitorConfig *
+-create_logical_monitor_config_from_output (MetaMonitorManager           *monitor_manager,
+-                                           MetaMonitor                  *monitor,
+-                                           MetaLogicalMonitorConfig     *primary_logical_monitor_config,
+-                                           MetaLogicalMonitorLayoutMode  layout_mode)
++create_preferred_logical_monitor_config (MetaMonitorManager           *monitor_manager,
++                                         MetaMonitor                  *monitor,
++                                         int                           x,
++                                         int                           y,
++                                         MetaLogicalMonitorConfig     *primary_logical_monitor_config,
++                                         MetaLogicalMonitorLayoutMode  layout_mode)
+ {
+-    MetaOutput *output;
+-    MetaCrtc *crtc;
++  return create_logical_monitor_config (monitor_manager,
++                                        monitor,
++                                        meta_monitor_get_preferred_mode (monitor),
++                                        x, y,
++                                        primary_logical_monitor_config,
++                                        layout_mode);
++}
+ 
+-    output = meta_monitor_get_main_output (monitor);
+-    crtc = meta_output_get_assigned_crtc (output);
+-    return create_preferred_logical_monitor_config (monitor_manager,
+-                                                    monitor,
+-                                                    crtc->rect.x,
+-                                                    crtc->rect.y,
+-                                                    primary_logical_monitor_config,
+-                                                    layout_mode);
++static MetaLogicalMonitorConfig *
++create_logical_monitor_config_from_monitor (MetaMonitorManager           *monitor_manager,
++                                            MetaMonitor                  *monitor,
++                                            MetaLogicalMonitorConfig     *primary_logical_monitor_config,
++                                            MetaLogicalMonitorLayoutMode  layout_mode)
++{
++  MetaRectangle monitor_layout;
++  MetaMonitorMode *mode;
++
++  meta_monitor_derive_layout (monitor, &monitor_layout);
++  mode = meta_monitor_get_current_mode (monitor);
++
++  return create_logical_monitor_config (monitor_manager,
++                                        monitor,
++                                        mode,
++                                        monitor_layout.x,
++                                        monitor_layout.y,
++                                        primary_logical_monitor_config,
++                                        layout_mode);
+ }
+ 
+ MetaMonitorsConfig *
+@@ -604,10 +621,10 @@ meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_man
+   layout_mode = meta_monitor_manager_get_default_layout_mode (monitor_manager);
+ 
+   primary_logical_monitor_config =
+-    create_logical_monitor_config_from_output (monitor_manager,
+-                                               primary_monitor,
+-                                               NULL,
+-                                               layout_mode);
++    create_logical_monitor_config_from_monitor (monitor_manager,
++                                                primary_monitor,
++                                                NULL,
++                                                layout_mode);
+ 
+   primary_logical_monitor_config->is_primary = TRUE;
+   logical_monitor_configs = g_list_append (NULL,
+@@ -626,10 +643,10 @@ meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_man
+         continue;
+ 
+       logical_monitor_config =
+-        create_logical_monitor_config_from_output (monitor_manager,
+-                                                   monitor,
+-                                                   primary_logical_monitor_config,
+-                                                   layout_mode);
++        create_logical_monitor_config_from_monitor (monitor_manager,
++                                                    monitor,
++                                                    primary_logical_monitor_config,
++                                                    layout_mode);
+ 
+       logical_monitor_configs = g_list_append (logical_monitor_configs,
+                                                logical_monitor_config);
+-- 
+2.20.1
+
+
+From 77c07e77ad233b763c82928c1db6003114b0a479 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 18 Mar 2019 17:10:37 +0100
+Subject: [PATCH 2/2] monitor-manager: Don't try to derive current config on
+ non-X11
+
+This commit also reworks the initial config state reading some. Appart from
+avoiding trying to inherit from backends where it doesn't make sense, it does
+the following changes:
+
+ * Replace the name "initial" with "inherited", as the initial config in the
+   context of monitor management is the one used initialization. E.g. if there is
+   a applicable configuration in monitors.xml, the initial config is taken from
+   there.
+
+ * Don't make "_create_()" functions have side effects. Previously
+   meta_monitor_config_manager_create_initial() also set state on the config
+   manager object. Instead, add a meta_monitor_config_manager_ensure_inherited()
+   and meta_monitor_manager_get_inherited_config() function to make things more
+   explicit.
+
+ * Don't recreate "is-applicable" logic, just use the existing helper.
+---
+ src/backends/meta-monitor-config-manager.c    | 39 +++++++++++--------
+ src/backends/meta-monitor-config-manager.h    |  5 ++-
+ src/backends/meta-monitor-manager-private.h   |  4 +-
+ src/backends/meta-monitor-manager.c           | 32 ++++++++-------
+ .../x11/meta-monitor-manager-xrandr.c         |  3 +-
+ 5 files changed, 48 insertions(+), 35 deletions(-)
+
+diff --git a/src/backends/meta-monitor-config-manager.c b/src/backends/meta-monitor-config-manager.c
+index aa8105edf..cb67e11e7 100644
+--- a/src/backends/meta-monitor-config-manager.c
++++ b/src/backends/meta-monitor-config-manager.c
+@@ -40,7 +40,7 @@ struct _MetaMonitorConfigManager
+   MetaMonitorConfigStore *config_store;
+ 
+   MetaMonitorsConfig *current_config;
+-  MetaMonitorsConfig *initial_config;
++  MetaMonitorsConfig *inherited_config;
+   GQueue config_history;
+ };
+ 
+@@ -596,11 +596,10 @@ create_logical_monitor_config_from_monitor (MetaMonitorManager           *monito
+                                         layout_mode);
+ }
+ 
+-MetaMonitorsConfig *
+-meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_manager)
++static MetaMonitorsConfig *
++meta_monitor_config_manager_derive_current (MetaMonitorConfigManager *config_manager)
+ {
+   MetaMonitorManager *monitor_manager = config_manager->monitor_manager;
+-  MetaMonitorsConfig *initial_config;
+   GList *logical_monitor_configs;
+   MetaMonitor *primary_monitor;
+   MetaLogicalMonitorLayoutMode layout_mode;
+@@ -608,12 +607,6 @@ meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_man
+   GList *monitors;
+   GList *l;
+ 
+-  if (config_manager->initial_config != NULL)
+-    return g_object_ref (config_manager->initial_config);
+-
+-  if (meta_monitor_config_store_get_config_count (config_manager->config_store) > 0)
+-    return NULL;
+-
+   primary_monitor = find_primary_monitor (monitor_manager);
+   if (!primary_monitor || !meta_monitor_is_active (primary_monitor))
+     return NULL;
+@@ -652,14 +645,26 @@ meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_man
+                                                logical_monitor_config);
+     }
+ 
+-  initial_config = meta_monitors_config_new (monitor_manager,
+-                                             logical_monitor_configs,
+-                                             layout_mode,
+-                                             META_MONITORS_CONFIG_FLAG_NONE);
++  return meta_monitors_config_new (monitor_manager,
++                                   logical_monitor_configs,
++                                   layout_mode,
++                                   META_MONITORS_CONFIG_FLAG_NONE);
++}
++
++void
++meta_monitor_config_manager_ensure_inherited_config (MetaMonitorConfigManager *config_manager)
++{
++  if (config_manager->inherited_config)
++    return;
+ 
+-  config_manager->initial_config = g_object_ref (initial_config);
++  config_manager->inherited_config =
++    meta_monitor_config_manager_derive_current (config_manager);
++}
+ 
+-  return initial_config;
++MetaMonitorsConfig *
++meta_monitor_config_manager_get_inherited_config (MetaMonitorConfigManager *config_manager)
++{
++  return config_manager->inherited_config;
+ }
+ 
+ MetaMonitorsConfig *
+@@ -1188,7 +1193,7 @@ meta_monitor_config_manager_dispose (GObject *object)
+     META_MONITOR_CONFIG_MANAGER (object);
+ 
+   g_clear_object (&config_manager->current_config);
+-  g_clear_object (&config_manager->initial_config);
++  g_clear_object (&config_manager->inherited_config);
+   meta_monitor_config_manager_clear_history (config_manager);
+ 
+   G_OBJECT_CLASS (meta_monitor_config_manager_parent_class)->dispose (object);
+diff --git a/src/backends/meta-monitor-config-manager.h b/src/backends/meta-monitor-config-manager.h
+index 16dff6d6a..25dcabcdc 100644
+--- a/src/backends/meta-monitor-config-manager.h
++++ b/src/backends/meta-monitor-config-manager.h
+@@ -88,7 +88,10 @@ gboolean meta_monitor_config_manager_assign (MetaMonitorManager *manager,
+ 
+ MetaMonitorsConfig * meta_monitor_config_manager_get_stored (MetaMonitorConfigManager *config_manager);
+ 
+-MetaMonitorsConfig * meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_manager);
++void meta_monitor_config_manager_ensure_inherited_config (MetaMonitorConfigManager *config_manager);
++
++MetaMonitorsConfig * meta_monitor_config_manager_get_inherited_config (MetaMonitorConfigManager *config_manager);
++
+ MetaMonitorsConfig * meta_monitor_config_manager_create_linear (MetaMonitorConfigManager *config_manager);
+ 
+ MetaMonitorsConfig * meta_monitor_config_manager_create_fallback (MetaMonitorConfigManager *config_manager);
+diff --git a/src/backends/meta-monitor-manager-private.h b/src/backends/meta-monitor-manager-private.h
+index a7a0671ae..0d3ed6830 100644
+--- a/src/backends/meta-monitor-manager-private.h
++++ b/src/backends/meta-monitor-manager-private.h
+@@ -77,7 +77,8 @@ typedef enum _MetaMonitorManagerCapability
+   META_MONITOR_MANAGER_CAPABILITY_NONE = 0,
+   META_MONITOR_MANAGER_CAPABILITY_MIRRORING = (1 << 0),
+   META_MONITOR_MANAGER_CAPABILITY_LAYOUT_MODE = (1 << 1),
+-  META_MONITOR_MANAGER_CAPABILITY_GLOBAL_SCALE_REQUIRED = (1 << 2)
++  META_MONITOR_MANAGER_CAPABILITY_GLOBAL_SCALE_REQUIRED = (1 << 2),
++  META_MONITOR_MANAGER_CAPABILITY_CAN_DERIVE_CURRENT = (1 << 3),
+ } MetaMonitorManagerCapability;
+ 
+ /* Equivalent to the 'method' enum in org.gnome.Mutter.DisplayConfig */
+@@ -178,6 +179,7 @@ struct _MetaMonitorManager
+   int persistent_timeout_id;
+ 
+   MetaMonitorConfigManager *config_manager;
++  MetaMonitorsConfig *initial_config;
+ 
+   GnomePnpIds *pnp_ids;
+   UpClient *up_client;
+diff --git a/src/backends/meta-monitor-manager.c b/src/backends/meta-monitor-manager.c
+index f7ada0136..68af15e76 100644
+--- a/src/backends/meta-monitor-manager.c
++++ b/src/backends/meta-monitor-manager.c
+@@ -493,14 +493,21 @@ should_use_stored_config (MetaMonitorManager *manager)
+           !meta_monitor_manager_has_hotplug_mode_update (manager));
+ }
+ 
++static gboolean
++can_derive_current_config (MetaMonitorManager *manager)
++{
++  MetaMonitorManagerCapability capabilities;
++
++  capabilities = meta_monitor_manager_get_capabilities (manager);
++  return !!(capabilities & META_MONITOR_MANAGER_CAPABILITY_CAN_DERIVE_CURRENT);
++}
++
+ MetaMonitorsConfig *
+ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+ {
+-  g_autoptr (MetaMonitorsConfig) initial_config = NULL;
+   MetaMonitorsConfig *config = NULL;
+   GError *error = NULL;
+   gboolean use_stored_config;
+-  MetaMonitorsConfigKey *current_state_key;
+   MetaMonitorsConfigMethod method;
+   MetaMonitorsConfigMethod fallback_method =
+     META_MONITORS_CONFIG_METHOD_TEMPORARY;
+@@ -511,17 +518,8 @@ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+   else
+     method = META_MONITORS_CONFIG_METHOD_TEMPORARY;
+ 
+-  initial_config = meta_monitor_config_manager_create_initial (manager->config_manager);
+-
+-  if (initial_config)
+-    {
+-      current_state_key = meta_create_monitors_config_key_for_current_state (manager);
+-
+-      /* don't ever reuse initial configuration, if the monitor topology changed
+-       */
+-      if (current_state_key && !meta_monitors_config_key_equal (current_state_key, initial_config->key))
+-        g_clear_object (&initial_config);
+-    }
++  if (can_derive_current_config (manager))
++    meta_monitor_config_manager_ensure_inherited_config (manager->config_manager);
+ 
+   if (use_stored_config)
+     {
+@@ -590,9 +588,13 @@ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+       g_clear_object (&config);
+     }
+ 
+-  config = g_steal_pointer (&initial_config);
+-  if (config)
++  config =
++    meta_monitor_config_manager_get_inherited_config (manager->config_manager);
++  if (config &&
++      meta_monitor_manager_is_config_complete (manager, config))
+     {
++      config = g_object_ref (config);
++
+       if (!meta_monitor_manager_apply_monitors_config (manager,
+                                                        config,
+                                                        method,
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.c b/src/backends/x11/meta-monitor-manager-xrandr.c
+index d0da2c539..2c14983e2 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.c
++++ b/src/backends/x11/meta-monitor-manager-xrandr.c
+@@ -949,7 +949,8 @@ static MetaMonitorManagerCapability
+ meta_monitor_manager_xrandr_get_capabilities (MetaMonitorManager *manager)
+ {
+   return (META_MONITOR_MANAGER_CAPABILITY_MIRRORING |
+-          META_MONITOR_MANAGER_CAPABILITY_GLOBAL_SCALE_REQUIRED);
++          META_MONITOR_MANAGER_CAPABILITY_GLOBAL_SCALE_REQUIRED |
++          META_MONITOR_MANAGER_CAPABILITY_CAN_DERIVE_CURRENT);
+ }
+ 
+ static gboolean
+-- 
+2.20.1
+

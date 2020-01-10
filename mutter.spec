@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       3.28.3
-Release:       12%{?dist}
+Release:       7%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -64,26 +64,8 @@ Patch201: hw-cursor-on-demand-gnome-3-28.patch
 # Check hw support for calculated view transform
 Patch202: 0001-renderer-native-Check-calculated-transform-when-crea.patch
 
-# System wide monitor configuration (#1583825)
-Patch250: 0001-monitor-config-store-Read-system-wide-config-files.patch
-
-# Don't ignore 'MetaModes' (#1581806)
-Patch260: inherit-xrandr-metamodes.patch
-
-# Handle lack of RANDR (#1579257)
-Patch261: 0001-gpu-xrandr-Move-dpms-state-and-screen-size-updating-.patch
-Patch262: 0002-monitor-manager-xrandr-Create-dummy-screen-sized-mon.patch
-
-# Queue stage redraw on reactivate (#1636460)
-Patch270: 0001-idle-monitor-Use-G_SOURCE_CONTINUE-instead-of-TRUE.patch
-Patch271: 0002-idle-monitor-Postpone-dispatching-of-idle-timeout-if.patch
-
-# Don't loose pointer button grabs (#1756263)
-Patch272: 0001-events-Sync-pending-pointer-events-without-a-window.patch
-
-# Fix crash in meta_monitor_mode_get_resolution() (#1760738)
-Patch273: 0001-monitor-Use-current-monitor-mode-to-check-whether-ac.patch
-Patch274: 0002-window-Return-1-if-meta_window_get_monitor-is-called.patch
+# Don't ignore 'MetaModes' (#1690760)
+Patch250: inherit-xrandr-metamodes.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -240,30 +222,11 @@ glib-compile-schemas %{_datadir}/glib-2.0/schemas &> /dev/null || :
 %{_libdir}/pkgconfig/*
 
 %changelog
-* Fri Oct 11 2019 Jonas Ådahl <jadahl@redhat.com> - 3.28.3-12
-- Fix crash in meta_monitor_mode_get_resolution()
-  Resolves #1760738
+* Mon Mar 18 2019 Jonas Ådahl <jadahl@redhat.com> - 3.28.3-7
+- Don't ignore current mode when deriving current config (#1690760)
 
-* Wed Oct 02 2019 Jonas Ådahl <jadahl@redhat.com>) - 3.28.3-11
-- Don't loose pointer button grabs
-  Resolves: #1756263
-
-* Wed Apr 17 2019 Jonas Ådahl <jadahl@redhat.com> - 3.28.3-10
-- Fix idle monitor race condition
-  Resolves: #1636460
-
-* Thu Mar 28 2019 Jonas Ådahl <jadahl@redhat.com> - 3.28.3-9
-- Handle lack of RANDR
-  Resolves: #1579257
-
-* Mon Mar 18 2019 Jonas Ådahl <jadahl@redhat.com> - 3.28.3-8
-- Don't ignore current mode when deriving current config (#1581806)
-
-* Tue Mar 12 2019 Jonas Ådahl <jadahl@redhat.com> - 3.28.3-7
-- Backport read system wide monitor configuration patch (#1583825)
-
-* Wed Jan 16 2019 Florian Müllner <fmuellner@redhat.com> - 3.28.3-6
-- Prevent titlebars going off-screen (rhbz#1664407)
+* Wed Jan 16 2019 Florian Müllner <fmuellner@redhat.com> - 3.26.2-18
+- Prevent titlebars going off-screen (rhbz#1679913)
 
 * Wed Oct 10 2018 Carlos Garnacho <cgarnach@redhat.com> - 3.28.3-5
 - Do not latch modifiers on modifier keys
